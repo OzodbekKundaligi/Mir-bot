@@ -186,11 +186,22 @@ class Database:
         )
         return self._doc_without_object_id(doc)
 
-    def list_movies(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_movies(self, limit: int | None = 50) -> list[dict[str, Any]]:
         cursor = self.movies.find(
             {},
             {"code": 1, "title": 1, "created_at": 1},
-        ).sort("created_at", DESCENDING).limit(limit)
+        ).sort("created_at", DESCENDING)
+        if limit and limit > 0:
+            cursor = cursor.limit(limit)
+        return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def list_serials(self, limit: int | None = None) -> list[dict[str, Any]]:
+        cursor = self.serials.find(
+            {},
+            {"code": 1, "title": 1, "created_at": 1},
+        ).sort("created_at", DESCENDING)
+        if limit and limit > 0:
+            cursor = cursor.limit(limit)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
 
     def add_serial(self, code: str, title: str, description: str) -> str | None:
@@ -342,12 +353,13 @@ BTN_SUBS = "📢 Majburiy obuna"
 BTN_ADD_MOVIE = "➕ Kino qo'shish"
 BTN_ADD_SERIAL = "📺 Serial qo'shish"
 BTN_DEL_MOVIE = "🗑 Kino o'chirish"
-BTN_LIST_MOVIES = "📚 Kino ro'yxati"
+BTN_LIST_MOVIES = "📚 Kino va serial ro'yxati"
 BTN_STATS = "📊 Statistika"
 BTN_ADD_ADMIN = "👤 Admin qo'shish"
 BTN_BACK = "⬅️ Ortga"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
+BOT_SIGNATURE = "@MirTopKinoBot"
 
 
 def is_cancel_text(value: str | None) -> bool:
@@ -443,6 +455,31 @@ def is_member_status(status: ChatMemberStatus) -> bool:
 
 def normalize_code(text: str) -> str:
     return text.strip()
+
+
+def append_signature(caption: str | None) -> str:
+    base = (caption or "").strip()
+    if base:
+        if base.endswith(BOT_SIGNATURE):
+            return base
+        return f"{base}\n\n{BOT_SIGNATURE}"
+    return BOT_SIGNATURE
+
+
+def split_text_chunks(text: str, max_len: int = 3800) -> list[str]:
+    lines = text.splitlines()
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        piece = f"{line}\n"
+        if current and len(current) + len(piece) > max_len:
+            chunks.append(current.rstrip())
+            current = piece
+        else:
+            current += piece
+    if current:
+        chunks.append(current.rstrip())
+    return chunks
 
 
 def build_movie_caption(title: str | None, description: str | None) -> str:
@@ -577,14 +614,15 @@ async def send_stored_media(
     file_id: str,
     caption: str | None = None,
 ) -> None:
+    final_caption = append_signature(caption)
     if media_type == "video":
-        await message.answer_video(file_id, caption=caption)
+        await message.answer_video(file_id, caption=final_caption)
     elif media_type == "document":
-        await message.answer_document(file_id, caption=caption)
+        await message.answer_document(file_id, caption=final_caption)
     elif media_type == "photo":
-        await message.answer_photo(file_id, caption=caption)
+        await message.answer_photo(file_id, caption=final_caption)
     elif media_type == "animation":
-        await message.answer_animation(file_id, caption=caption)
+        await message.answer_animation(file_id, caption=final_caption)
     elif media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
@@ -598,7 +636,7 @@ async def send_stored_media(
             chat_id=message.chat.id,
             from_chat_id=from_chat_id,
             message_id=post_data[1],
-            caption=caption,
+            caption=final_caption,
         )
     elif media_type == "link":
         post_data = parse_telegram_post_link(file_id)
@@ -612,18 +650,12 @@ async def send_stored_media(
                 chat_id=message.chat.id,
                 from_chat_id=from_chat_id,
                 message_id=post_data[1],
-                caption=caption,
+                caption=final_caption,
             )
         else:
-            if caption:
-                await message.answer(f"{caption}\n\nLink: {file_id}")
-            else:
-                await message.answer(f"Link: {file_id}")
+            await message.answer(f"{final_caption}\n\nLink: {file_id}")
     else:
-        if caption:
-            await message.answer(f"{caption}\n\nID: {file_id}")
-        else:
-            await message.answer(f"ID: {file_id}")
+        await message.answer(f"{final_caption}\n\nID: {file_id}")
 
 
 load_dotenv()
@@ -1248,14 +1280,35 @@ async def delete_movie_finish(message: Message, state: FSMContext) -> None:
 async def movie_list(message: Message) -> None:
     if not message.from_user or not guard_admin(message):
         return
-    movies = db.list_movies()
-    if not movies:
-        await message.answer("📭 Kino bazasi hozircha bo'sh.")
+    movies = db.list_movies(limit=None)
+    serials = db.list_serials(limit=None)
+    if not movies and not serials:
+        await message.answer("📭 Kino va serial bazasi hozircha bo'sh.")
         return
-    lines = ["🎬 Oxirgi kinolar:"]
-    for item in movies:
-        lines.append(f"{item['code']} - {item['title']}")
-    await message.answer("\n".join(lines))
+
+    lines: list[str] = ["📚 Barcha kino va seriallar ro'yxati", ""]
+    lines.append(f"🎬 Kinolar ({len(movies)}):")
+    if movies:
+        for item in movies:
+            code = item.get("code", "-")
+            title = item.get("title") or "Noma'lum"
+            lines.append(f"{code} - {title}")
+    else:
+        lines.append("— Kinolar yo'q")
+
+    lines.append("")
+    lines.append(f"📺 Seriallar ({len(serials)}):")
+    if serials:
+        for item in serials:
+            code = item.get("code", "-")
+            title = item.get("title") or "Noma'lum"
+            lines.append(f"{code} - {title}")
+    else:
+        lines.append("— Seriallar yo'q")
+
+    text = "\n".join(lines)
+    for chunk in split_text_chunks(text):
+        await message.answer(chunk)
 
 
 @router.message(F.text.in_({BTN_STATS, "Statistika"}))

@@ -15,6 +15,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    ChatJoinRequest,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -59,6 +60,7 @@ class Database:
         self.admins = self.db["admins"]
         self.users = self.db["users"]
         self.required_channels = self.db["required_channels"]
+        self.join_requests = self.db["join_requests"]
         self.movies = self.db["movies"]
         self.serials = self.db["serials"]
         self.serial_episodes = self.db["serial_episodes"]
@@ -88,6 +90,8 @@ class Database:
         self.users.create_index("tg_id", unique=True)
         self.required_channels.create_index("channel_ref", unique=True)
         self.required_channels.create_index([("is_active", ASCENDING), ("created_at", DESCENDING)])
+        self.join_requests.create_index([("user_tg_id", ASCENDING), ("channel_ref", ASCENDING)], unique=True)
+        self.join_requests.create_index([("created_at", DESCENDING)])
         self.movies.create_index("code", unique=True)
         self.movies.create_index([("created_at", DESCENDING)])
         self.serials.create_index("code", unique=True)
@@ -159,6 +163,35 @@ class Database:
             {"channel_ref": 1, "title": 1, "join_link": 1},
         ).sort("created_at", DESCENDING)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def mark_join_request(self, user_tg_id: int, channel_ref: str) -> None:
+        channel_ref = channel_ref.strip()
+        if not channel_ref:
+            return
+        now = utc_now_iso()
+        self.join_requests.update_one(
+            {"user_tg_id": user_tg_id, "channel_ref": channel_ref},
+            {
+                "$set": {"updated_at": now},
+                "$setOnInsert": {
+                    "user_tg_id": user_tg_id,
+                    "channel_ref": channel_ref,
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+
+    def get_join_request_refs(self, user_tg_id: int) -> set[str]:
+        cursor = self.join_requests.find(
+            {"user_tg_id": user_tg_id},
+            {"channel_ref": 1},
+        )
+        return {
+            str(doc["channel_ref"]).strip()
+            for doc in cursor
+            if doc and str(doc.get("channel_ref", "")).strip()
+        }
 
     def add_movie(self, movie: Movie) -> bool:
         now = utc_now_iso()
@@ -709,19 +742,33 @@ def guard_admin(message: Message) -> bool:
     return bool(message.from_user and db.is_admin(message.from_user.id))
 
 
+@router.chat_join_request()
+async def on_chat_join_request(join_request: ChatJoinRequest) -> None:
+    chat_refs = {str(join_request.chat.id)}
+    username = getattr(join_request.chat, "username", None)
+    if username:
+        chat_refs.add(f"@{username}")
+    for chat_ref in chat_refs:
+        db.mark_join_request(join_request.from_user.id, chat_ref)
+
+
 async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[str, Any]]]:
     channels = db.get_required_channels()
     if not channels:
         return True, []
 
+    pending_refs = db.get_join_request_refs(user_id)
     not_joined: list[dict[str, Any]] = []
     for channel in channels:
+        channel_ref = channel["channel_ref"]
+        has_pending_request = channel_ref in pending_refs
         try:
-            member = await bot.get_chat_member(chat_id=channel["channel_ref"], user_id=user_id)
-            if not is_member_status(member.status):
+            member = await bot.get_chat_member(chat_id=channel_ref, user_id=user_id)
+            if not is_member_status(member.status) and not has_pending_request:
                 not_joined.append(channel)
         except (TelegramBadRequest, TelegramForbiddenError):
-            not_joined.append(channel)
+            if not has_pending_request:
+                not_joined.append(channel)
     return len(not_joined) == 0, not_joined
 
 
@@ -897,6 +944,15 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
         if me_member.status not in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}:
             await message.answer("⚠️ Bot majburiy obunani tekshirishi uchun kanalda admin bo'lishi shart.")
             return
+        if (
+            channel_ref.lstrip("-").isdigit()
+            and me_member.status == ChatMemberStatus.ADMINISTRATOR
+            and not getattr(me_member, "can_invite_users", False)
+        ):
+            await message.answer(
+                "ℹ️ Eslatma: zayafka yuborilgani bilan obunani o'tkazish uchun botda "
+                "'Invite users via link' (join requestlarni ko'rish) huquqi bo'lishi kerak."
+            )
     except (TelegramBadRequest, TelegramForbiddenError):
         await message.answer(
             "❌ Bot bu kanalda a'zolar obunasini tekshira olmayapti.\n"

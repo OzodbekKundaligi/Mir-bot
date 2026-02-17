@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Iterable
@@ -317,6 +318,18 @@ class Database:
             return True
         return self.serials.find_one({"code": code}, {"_id": 1}) is not None
 
+    def get_all_codes(self) -> set[str]:
+        codes: set[str] = set()
+        for doc in self.movies.find({}, {"code": 1}):
+            code = str(doc.get("code", "")).strip() if doc else ""
+            if code:
+                codes.add(code)
+        for doc in self.serials.find({}, {"code": 1}):
+            code = str(doc.get("code", "")).strip() if doc else ""
+            if code:
+                codes.add(code)
+        return codes
+
     def log_request(self, user_tg_id: int, movie_code: str, result: str) -> None:
         now = utc_now_iso()
         self.requests_log.insert_one(
@@ -387,6 +400,7 @@ BTN_SUBS = "📢 Majburiy obuna"
 BTN_ADD_MOVIE = "➕ Kino qo'shish"
 BTN_ADD_SERIAL = "📺 Serial qo'shish"
 BTN_DEL_MOVIE = "🗑 Kino o'chirish"
+BTN_RANDOM_CODES = "🎲 Random kod"
 BTN_LIST_MOVIES = "📚 Kino va serial ro'yxati"
 BTN_STATS = "📊 Statistika"
 BTN_ADD_ADMIN = "👤 Admin qo'shish"
@@ -394,6 +408,40 @@ BTN_BACK = "⬅️ Ortga"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
 BOT_SIGNATURE = "@MirTopKinoBot"
+
+
+def generate_missing_numeric_codes(existing_codes: Iterable[str], count: int) -> list[str]:
+    if count <= 0:
+        return []
+
+    numeric_existing = {
+        int(code.strip())
+        for code in existing_codes
+        if isinstance(code, str) and code.strip().isdigit() and int(code.strip()) > 0
+    }
+    max_existing = max(numeric_existing) if numeric_existing else 0
+    upper_bound = max(max_existing + (count * 30), 500)
+    max_attempts = max(2000, upper_bound * 2)
+
+    picked: set[int] = set()
+    result: list[str] = []
+    attempts = 0
+    while len(result) < count and attempts < max_attempts:
+        attempts += 1
+        candidate = random.randint(1, upper_bound)
+        if candidate in numeric_existing or candidate in picked:
+            continue
+        picked.add(candidate)
+        result.append(str(candidate))
+
+    next_candidate = max_existing + 1 if max_existing > 0 else 1
+    while len(result) < count:
+        if next_candidate not in numeric_existing and next_candidate not in picked:
+            picked.add(next_candidate)
+            result.append(str(next_candidate))
+        next_candidate += 1
+
+    return result
 
 
 def is_cancel_text(value: str | None) -> bool:
@@ -430,7 +478,8 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_SUBS)],
         [KeyboardButton(text=BTN_ADD_MOVIE), KeyboardButton(text=BTN_ADD_SERIAL)],
         [KeyboardButton(text=BTN_DEL_MOVIE), KeyboardButton(text=BTN_LIST_MOVIES)],
-        [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_ADD_ADMIN)],
+        [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_RANDOM_CODES)],
+        [KeyboardButton(text=BTN_ADD_ADMIN)],
         [KeyboardButton(text=BTN_BACK)],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -537,6 +586,31 @@ def build_serial_episodes_kb(serial_id: str, episode_numbers: list[int]) -> Inli
     for number in episode_numbers:
         builder.button(text=str(number), callback_data=f"serial_ep:{serial_id}:{number}")
     builder.adjust(5)
+    return builder.as_markup()
+
+
+def build_episode_navigation_kb(
+    serial_id: str,
+    episode_numbers: list[int],
+    current_episode: int,
+) -> InlineKeyboardMarkup | None:
+    unique_sorted = sorted({int(number) for number in episode_numbers})
+    if current_episode not in unique_sorted:
+        return None
+
+    idx = unique_sorted.index(current_episode)
+    prev_episode = unique_sorted[idx - 1] if idx > 0 else None
+    next_episode = unique_sorted[idx + 1] if idx < len(unique_sorted) - 1 else None
+
+    if prev_episode is None and next_episode is None:
+        return None
+
+    builder = InlineKeyboardBuilder()
+    if prev_episode is not None:
+        builder.button(text="⬅️ Oldingi qism", callback_data=f"serial_ep:{serial_id}:{prev_episode}")
+    if next_episode is not None:
+        builder.button(text="➡️ Keyingi qism", callback_data=f"serial_ep:{serial_id}:{next_episode}")
+    builder.adjust(2)
     return builder.as_markup()
 
 
@@ -672,16 +746,17 @@ async def send_stored_media(
     media_type: str,
     file_id: str,
     caption: str | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     final_caption = append_signature(caption)
     if media_type == "video":
-        await message.answer_video(file_id, caption=final_caption)
+        await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup)
     elif media_type == "document":
-        await message.answer_document(file_id, caption=final_caption)
+        await message.answer_document(file_id, caption=final_caption, reply_markup=reply_markup)
     elif media_type == "photo":
-        await message.answer_photo(file_id, caption=final_caption)
+        await message.answer_photo(file_id, caption=final_caption, reply_markup=reply_markup)
     elif media_type == "animation":
-        await message.answer_animation(file_id, caption=final_caption)
+        await message.answer_animation(file_id, caption=final_caption, reply_markup=reply_markup)
     elif media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
@@ -696,6 +771,7 @@ async def send_stored_media(
             from_chat_id=from_chat_id,
             message_id=post_data[1],
             caption=final_caption,
+            reply_markup=reply_markup,
         )
     elif media_type == "link":
         post_data = parse_telegram_post_link(file_id)
@@ -710,11 +786,12 @@ async def send_stored_media(
                 from_chat_id=from_chat_id,
                 message_id=post_data[1],
                 caption=final_caption,
+                reply_markup=reply_markup,
             )
         else:
-            await message.answer(f"{final_caption}\n\nLink: {file_id}")
+            await message.answer(f"{final_caption}\n\nLink: {file_id}", reply_markup=reply_markup)
     else:
-        await message.answer(f"{final_caption}\n\nID: {file_id}")
+        await message.answer(f"{final_caption}\n\nID: {file_id}", reply_markup=reply_markup)
 
 
 load_dotenv()
@@ -1077,6 +1154,10 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
         await callback.answer("Qism topilmadi", show_alert=True)
         return
 
+    episodes = db.list_serial_episodes(serial_id)
+    episode_numbers = [row["episode_number"] for row in episodes]
+    nav_kb = build_episode_navigation_kb(serial_id, episode_numbers, episode_number)
+
     caption = build_movie_caption(serial["title"], f"{episode_number}-qism")
     try:
         await send_stored_media(
@@ -1084,6 +1165,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
             media_type=episode["media_type"],
             file_id=episode["file_id"],
             caption=caption if caption else None,
+            reply_markup=nav_kb,
         )
         await callback.answer()
     except (TelegramBadRequest, TelegramForbiddenError, ValueError):
@@ -1098,7 +1180,12 @@ async def add_movie_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(AddMovieState.waiting_code)
-    await message.answer("🎬 Yangi kino kodini yuboring:", reply_markup=cancel_kb())
+    suggested_codes = ", ".join(generate_missing_numeric_codes(db.get_all_codes(), 5))
+    await message.answer(
+        "🎬 Yangi kino kodini yuboring:\n"
+        f"💡 Bazada yo'q 5 ta kod: {suggested_codes}",
+        reply_markup=cancel_kb(),
+    )
 
 
 @router.message(AddMovieState.waiting_code)
@@ -1203,7 +1290,12 @@ async def add_serial_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(AddSerialState.waiting_code)
-    await message.answer("📺 Yangi serial kodi yuboring:", reply_markup=cancel_kb())
+    suggested_codes = ", ".join(generate_missing_numeric_codes(db.get_all_codes(), 5))
+    await message.answer(
+        "📺 Yangi serial kodi yuboring:\n"
+        f"💡 Bazada yo'q 5 ta kod: {suggested_codes}",
+        reply_markup=cancel_kb(),
+    )
 
 
 @router.message(AddSerialState.waiting_code)
@@ -1358,7 +1450,7 @@ async def delete_movie_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(DeleteMovieState.waiting_code)
-    await message.answer("🗑 O'chirish uchun kino kodini yuboring:", reply_markup=cancel_kb())
+    await message.answer("🗑 O'chirish uchun kino yoki serial kodini yuboring:", reply_markup=cancel_kb())
 
 
 @router.message(DeleteMovieState.waiting_code)
@@ -1374,12 +1466,32 @@ async def delete_movie_finish(message: Message, state: FSMContext) -> None:
     if not text:
         await message.answer("Kod yuboring.")
         return
-    deleted = db.delete_movie(text)
+    deleted_types: list[str] = []
+    if db.delete_movie(text):
+        deleted_types.append("kino")
+
+    serial = db.get_serial_by_code(text)
+    if serial and db.delete_serial(serial["id"]):
+        deleted_types.append("serial")
+
     await state.clear()
-    if deleted:
-        await message.answer("✅ Kino o'chirildi.", reply_markup=admin_menu_kb())
+    if deleted_types:
+        if len(deleted_types) == 1:
+            deleted_name = "Kino" if deleted_types[0] == "kino" else "Serial"
+            await message.answer(f"✅ {deleted_name} o'chirildi.", reply_markup=admin_menu_kb())
+        else:
+            await message.answer("✅ Kino va serial o'chirildi.", reply_markup=admin_menu_kb())
     else:
-        await message.answer("❌ Bu kod bo'yicha kino topilmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bu kod bo'yicha kino yoki serial topilmadi.", reply_markup=admin_menu_kb())
+
+
+@router.message(F.text.in_({BTN_RANDOM_CODES, "Random kod"}))
+async def random_missing_codes(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    codes = generate_missing_numeric_codes(db.get_all_codes(), 10)
+    lines = ["🎲 Bazada yo'q 10 ta random kod:", *[f"• {code}" for code in codes]]
+    await message.answer("\n".join(lines))
 
 
 @router.message(F.text.in_({BTN_LIST_MOVIES, "Kino ro'yxati"}))
@@ -1487,6 +1599,7 @@ async def handle_code_request(message: Message) -> None:
         BTN_ADD_MOVIE.lower(),
         BTN_ADD_SERIAL.lower(),
         BTN_DEL_MOVIE.lower(),
+        BTN_RANDOM_CODES.lower(),
         BTN_LIST_MOVIES.lower(),
         BTN_STATS.lower(),
         BTN_ADD_ADMIN.lower(),
@@ -1498,6 +1611,7 @@ async def handle_code_request(message: Message) -> None:
         "kino qo'shish",
         "serial qo'shish",
         "kino o'chirish",
+        "random kod",
         "kino ro'yxati",
         "statistika",
         "admin qo'shish",

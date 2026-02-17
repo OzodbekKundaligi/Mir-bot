@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ContentType
 from aiogram.exceptions import ClientDecodeError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import CommandStart, StateFilter
@@ -573,6 +574,31 @@ def normalize_channel_ref_input(value: str) -> str | None:
     return None
 
 
+def normalize_invite_link_input(value: str) -> str | None:
+    raw = value.strip()
+    if not raw:
+        return None
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = (parsed.netloc or "").lower()
+    if host not in {"t.me", "www.t.me", "telegram.me", "www.telegram.me"}:
+        return None
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts:
+        return None
+
+    first = parts[0]
+    if first.startswith("+") and len(first) > 1:
+        return raw
+    if first == "joinchat" and len(parts) >= 2 and parts[1]:
+        return raw
+
+    return None
+
+
 def pack_post_ref(chat_ref: str, message_id: int) -> str:
     return f"{chat_ref}|{message_id}"
 
@@ -777,6 +803,7 @@ async def add_sub_start(callback: CallbackQuery, state: FSMContext) -> None:
         "📌 Kanal ma'lumotini quyidagicha yuboring:\n"
         "1) @kanal_username\n"
         "2) -1001234567890|https://t.me/+invite_link\n\n"
+        "Private kanal uchun avval ID, keyin alohida invite link yuborish ham mumkin.\n"
         "Yoki kanaldan 1 ta postni forward qiling.\n"
         f"Bekor qilish: {BTN_CANCEL}"
     )
@@ -800,6 +827,9 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
     join_link: str | None = None
     channel_ref: str | None = None
     title: str | None = None
+    state_data = await state.get_data()
+    pending_channel_ref = str(state_data.get("pending_channel_ref") or "").strip()
+    pending_channel_title = str(state_data.get("pending_channel_title") or "").strip() or None
 
     # 1) Forwarded postdan kanalni avtomatik olish
     forward_chat = getattr(message, "forward_from_chat", None)
@@ -820,8 +850,23 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
             join_link = right.strip() or None
         else:
             channel_ref = normalize_channel_ref_input(text)
+            if not channel_ref:
+                invite_link_only = normalize_invite_link_input(text)
+                if invite_link_only and pending_channel_ref:
+                    channel_ref = pending_channel_ref
+                    join_link = invite_link_only
+                    title = pending_channel_title
 
     if not channel_ref:
+        if normalize_invite_link_input(text):
+            await message.answer(
+                "⚠️ Invite linkni alohida yuborish uchun avval kanal ID sini yuboring.\n"
+                "Masalan:\n"
+                "1) -1001234567890\n"
+                "2) https://t.me/+invite_link\n\n"
+                "Yoki bitta xabarda: -1001234567890|https://t.me/+invite_link"
+            )
+            return
         await message.answer(
             "⚠️ Noto'g'ri format.\n"
             "To'g'ri formatlar:\n"
@@ -870,9 +915,14 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
             join_link = f"https://t.me/{channel_ref[1:]}"
 
     if channel_ref.lstrip("-").isdigit() and not join_link:
+        await state.update_data(
+            pending_channel_ref=channel_ref,
+            pending_channel_title=title or channel_ref,
+        )
         await message.answer(
             "⚠️ Private kanal uchun join link kerak.\n"
-            "Format: -1001234567890|https://t.me/+invite_link"
+            "Format: -1001234567890|https://t.me/+invite_link\n"
+            "Yoki endi faqat invite link yuboring: https://t.me/+invite_link"
         )
         return
 
@@ -1452,7 +1502,7 @@ async def handle_code_request(message: Message) -> None:
 
 
 async def main() -> None:
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     await dp.start_polling(bot)

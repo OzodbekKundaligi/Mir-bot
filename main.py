@@ -1,7 +1,10 @@
 import asyncio
+import base64
+import hashlib
 import logging
 import os
 import random
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Iterable
@@ -18,8 +21,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ChatJoinRequest,
     CallbackQuery,
+    InlineQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
     KeyboardButton,
     MessageOriginChannel,
     Message,
@@ -51,6 +57,9 @@ class Movie:
     description: str
     media_type: str
     file_id: str
+    year: int | None = None
+    quality: str = ""
+    genres: list[str] | None = None
 
 
 class Database:
@@ -66,6 +75,9 @@ class Database:
         self.serials = self.db["serials"]
         self.serial_episodes = self.db["serial_episodes"]
         self.requests_log = self.db["requests_log"]
+        self.content_requests = self.db["content_requests"]
+        self.favorites = self.db["favorites"]
+        self.notification_log = self.db["notification_log"]
 
         self.init_indexes()
 
@@ -86,6 +98,23 @@ class Database:
         except (InvalidId, TypeError):
             return None
 
+    @staticmethod
+    def _normalize_lookup(value: str) -> str:
+        cleaned = re.sub(r"[^\w\s]+", " ", value.lower(), flags=re.UNICODE)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _normalize_quality(value: str | None) -> str:
+        return re.sub(r"\s+", "", (value or "").strip().lower())
+
+    @classmethod
+    def _title_matches_query(cls, title: str, description: str, query: str) -> bool:
+        query_norm = cls._normalize_lookup(query)
+        if not query_norm:
+            return True
+        haystack = cls._normalize_lookup(f"{title} {description}")
+        return query_norm in haystack
+
     def init_indexes(self) -> None:
         self.admins.create_index("tg_id", unique=True)
         self.users.create_index("tg_id", unique=True)
@@ -95,13 +124,29 @@ class Database:
         self.join_requests.create_index([("created_at", DESCENDING)])
         self.movies.create_index("code", unique=True)
         self.movies.create_index([("created_at", DESCENDING)])
+        self.movies.create_index([("year", DESCENDING), ("quality_norm", ASCENDING)])
+        self.movies.create_index("genres")
         self.serials.create_index("code", unique=True)
         self.serials.create_index([("created_at", DESCENDING)])
+        self.serials.create_index([("year", DESCENDING), ("quality_norm", ASCENDING)])
+        self.serials.create_index("genres")
         self.serial_episodes.create_index(
             [("serial_id", ASCENDING), ("episode_number", ASCENDING)],
             unique=True,
         )
         self.requests_log.create_index([("created_at", DESCENDING)])
+        self.content_requests.create_index(
+            [("user_tg_id", ASCENDING), ("request_type", ASCENDING), ("normalized_query", ASCENDING)],
+            unique=True,
+        )
+        self.content_requests.create_index([("status", ASCENDING), ("updated_at", DESCENDING)])
+        self.content_requests.create_index([("request_type", ASCENDING), ("normalized_query", ASCENDING)])
+        self.favorites.create_index(
+            [("user_tg_id", ASCENDING), ("content_type", ASCENDING), ("content_ref", ASCENDING)],
+            unique=True,
+        )
+        self.favorites.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
+        self.notification_log.create_index([("created_at", DESCENDING)])
 
     def seed_admins(self, admin_ids: Iterable[int]) -> None:
         now = utc_now_iso()
@@ -196,12 +241,18 @@ class Database:
 
     def add_movie(self, movie: Movie) -> bool:
         now = utc_now_iso()
+        genres = sorted({g.strip().lower() for g in (movie.genres or []) if g and g.strip()})
         doc = {
             "code": movie.code,
             "title": movie.title,
             "description": movie.description,
             "media_type": movie.media_type,
             "file_id": movie.file_id,
+            "year": movie.year,
+            "quality": movie.quality.strip(),
+            "quality_norm": self._normalize_quality(movie.quality),
+            "genres": genres,
+            "title_norm": self._normalize_lookup(movie.title),
             "created_at": now,
         }
         try:
@@ -217,7 +268,35 @@ class Database:
     def get_movie(self, code: str) -> dict[str, Any] | None:
         doc = self.movies.find_one(
             {"code": code},
-            {"code": 1, "title": 1, "description": 1, "media_type": 1, "file_id": 1},
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "media_type": 1,
+                "file_id": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+            },
+        )
+        return self._doc_without_object_id(doc)
+
+    def get_movie_by_id(self, movie_id: str) -> dict[str, Any] | None:
+        movie_object_id = self._to_object_id(movie_id)
+        if not movie_object_id:
+            return None
+        doc = self.movies.find_one(
+            {"_id": movie_object_id},
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "media_type": 1,
+                "file_id": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+            },
         )
         return self._doc_without_object_id(doc)
 
@@ -228,7 +307,12 @@ class Database:
         description: str,
         media_type: str,
         file_id: str,
+        year: int | None = None,
+        quality: str = "",
+        genres: list[str] | None = None,
     ) -> bool:
+        cleaned_quality = quality.strip()
+        cleaned_genres = sorted({g.strip().lower() for g in (genres or []) if g and g.strip()})
         result = self.movies.update_one(
             {"code": code},
             {
@@ -237,6 +321,11 @@ class Database:
                     "description": description,
                     "media_type": media_type,
                     "file_id": file_id,
+                    "year": year,
+                    "quality": cleaned_quality,
+                    "quality_norm": self._normalize_quality(cleaned_quality),
+                    "genres": cleaned_genres,
+                    "title_norm": self._normalize_lookup(title),
                     "updated_at": utc_now_iso(),
                 }
             },
@@ -246,7 +335,7 @@ class Database:
     def list_movies(self, limit: int | None = 50) -> list[dict[str, Any]]:
         cursor = self.movies.find(
             {},
-            {"code": 1, "title": 1, "created_at": 1},
+            {"code": 1, "title": 1, "year": 1, "quality": 1, "created_at": 1},
         ).sort("created_at", DESCENDING)
         if limit and limit > 0:
             cursor = cursor.limit(limit)
@@ -255,18 +344,33 @@ class Database:
     def list_serials(self, limit: int | None = None) -> list[dict[str, Any]]:
         cursor = self.serials.find(
             {},
-            {"code": 1, "title": 1, "created_at": 1},
+            {"code": 1, "title": 1, "year": 1, "quality": 1, "created_at": 1},
         ).sort("created_at", DESCENDING)
         if limit and limit > 0:
             cursor = cursor.limit(limit)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
 
-    def add_serial(self, code: str, title: str, description: str) -> str | None:
+    def add_serial(
+        self,
+        code: str,
+        title: str,
+        description: str,
+        year: int | None = None,
+        quality: str = "",
+        genres: list[str] | None = None,
+    ) -> str | None:
         now = utc_now_iso()
+        cleaned_quality = quality.strip()
+        cleaned_genres = sorted({g.strip().lower() for g in (genres or []) if g and g.strip()})
         doc = {
             "code": code,
             "title": title,
             "description": description,
+            "year": year,
+            "quality": cleaned_quality,
+            "quality_norm": self._normalize_quality(cleaned_quality),
+            "genres": cleaned_genres,
+            "title_norm": self._normalize_lookup(title),
             "created_at": now,
         }
         try:
@@ -310,14 +414,14 @@ class Database:
             return None
         doc = self.serials.find_one(
             {"_id": serial_object_id},
-            {"code": 1, "title": 1, "description": 1},
+            {"code": 1, "title": 1, "description": 1, "year": 1, "quality": 1, "genres": 1},
         )
         return self._doc_without_object_id(doc)
 
     def get_serial_by_code(self, code: str) -> dict[str, Any] | None:
         doc = self.serials.find_one(
             {"code": code},
-            {"code": 1, "title": 1, "description": 1},
+            {"code": 1, "title": 1, "description": 1, "year": 1, "quality": 1, "genres": 1},
         )
         return self._doc_without_object_id(doc)
 
@@ -372,6 +476,399 @@ class Database:
                 user_ids.append(tg_id)
         return user_ids
 
+    def search_content(
+        self,
+        query: str,
+        limit: int = 20,
+        year: int | None = None,
+        quality: str | None = None,
+        genres: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        query_norm = self._normalize_lookup(query)
+        quality_norm = self._normalize_quality(quality)
+        genres_norm = sorted({g.strip().lower() for g in (genres or []) if g and g.strip()})
+
+        mongo_filter: dict[str, Any] = {}
+        if year is not None:
+            mongo_filter["year"] = year
+        if quality_norm:
+            mongo_filter["quality_norm"] = quality_norm
+        if genres_norm:
+            mongo_filter["genres"] = {"$all": genres_norm}
+
+        movies_cursor = self.movies.find(
+            mongo_filter,
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+                "created_at": 1,
+            },
+        ).sort("created_at", DESCENDING).limit(300)
+
+        serials_cursor = self.serials.find(
+            mongo_filter,
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+                "created_at": 1,
+            },
+        ).sort("created_at", DESCENDING).limit(300)
+
+        results: list[dict[str, Any]] = []
+
+        def score_for_item(item_code: str, item_title: str, item_description: str) -> int:
+            if not query_norm:
+                return 1
+            title_norm = self._normalize_lookup(item_title)
+            desc_norm = self._normalize_lookup(item_description)
+            code_norm = self._normalize_lookup(item_code)
+            if query_norm == code_norm:
+                return 8
+            if query_norm == title_norm:
+                return 7
+            if title_norm.startswith(query_norm):
+                return 6
+            if query_norm in title_norm:
+                return 5
+            if query_norm in desc_norm:
+                return 3
+            return 0
+
+        for doc in movies_cursor:
+            if not doc:
+                continue
+            code = str(doc.get("code") or "").strip()
+            title = str(doc.get("title") or "").strip()
+            description = str(doc.get("description") or "").strip()
+            score = score_for_item(code, title, description)
+            if query_norm and score == 0:
+                continue
+            normalized = self._doc_without_object_id(doc)
+            if not normalized:
+                continue
+            normalized["content_type"] = "movie"
+            normalized["_score"] = score
+            results.append(normalized)
+
+        for doc in serials_cursor:
+            if not doc:
+                continue
+            code = str(doc.get("code") or "").strip()
+            title = str(doc.get("title") or "").strip()
+            description = str(doc.get("description") or "").strip()
+            score = score_for_item(code, title, description)
+            if query_norm and score == 0:
+                continue
+            normalized = self._doc_without_object_id(doc)
+            if not normalized:
+                continue
+            normalized["content_type"] = "serial"
+            normalized["_score"] = score
+            results.append(normalized)
+
+        # Keep the highest-scored and newest content.
+        results = sorted(
+            results,
+            key=lambda item: (
+                int(item.get("_score", 0)),
+                str(item.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+
+        trimmed: list[dict[str, Any]] = []
+        for row in results[: max(1, limit)]:
+            data = dict(row)
+            data.pop("_score", None)
+            trimmed.append(data)
+        return trimmed
+
+    def add_or_increment_content_request(
+        self,
+        user_tg_id: int,
+        query_text: str,
+        request_type: str,
+    ) -> tuple[bool, int]:
+        normalized_query = self._normalize_lookup(query_text)
+        if not normalized_query:
+            raise ValueError("Empty query")
+        if request_type not in {"code", "search"}:
+            raise ValueError("Invalid request type")
+
+        now = utc_now_iso()
+        criteria = {
+            "user_tg_id": user_tg_id,
+            "request_type": request_type,
+            "normalized_query": normalized_query,
+        }
+        existing = self.content_requests.find_one(criteria, {"_id": 1, "request_count": 1})
+        self.content_requests.update_one(
+            criteria,
+            {
+                "$set": {
+                    "query_text": query_text.strip()[:120],
+                    "status": "open",
+                    "updated_at": now,
+                    "fulfilled_at": None,
+                    "fulfilled_content_type": None,
+                    "fulfilled_content_ref": None,
+                },
+                "$setOnInsert": {
+                    "created_at": now,
+                },
+                "$inc": {"request_count": 1},
+            },
+            upsert=True,
+        )
+        latest = self.content_requests.find_one(criteria, {"request_count": 1})
+        count = int((latest or {}).get("request_count", 1))
+        return existing is None, count
+
+    def list_open_request_topics(self, limit: int = 30) -> list[dict[str, Any]]:
+        pipeline = [
+            {"$match": {"status": "open"}},
+            {
+                "$group": {
+                    "_id": {
+                        "request_type": "$request_type",
+                        "normalized_query": "$normalized_query",
+                    },
+                    "query_text": {"$first": "$query_text"},
+                    "total_requests": {"$sum": "$request_count"},
+                    "users": {"$addToSet": "$user_tg_id"},
+                    "last_updated": {"$max": "$updated_at"},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "request_type": "$_id.request_type",
+                    "normalized_query": "$_id.normalized_query",
+                    "query_text": 1,
+                    "total_requests": 1,
+                    "users_count": {"$size": "$users"},
+                    "last_updated": 1,
+                }
+            },
+            {"$sort": {"total_requests": -1, "users_count": -1, "last_updated": -1}},
+            {"$limit": max(1, limit)},
+        ]
+        return list(self.content_requests.aggregate(pipeline))
+
+    def list_recent_fulfilled_topics(self, limit: int = 10) -> list[dict[str, Any]]:
+        pipeline = [
+            {"$match": {"status": "fulfilled"}},
+            {
+                "$group": {
+                    "_id": {
+                        "request_type": "$request_type",
+                        "normalized_query": "$normalized_query",
+                    },
+                    "query_text": {"$first": "$query_text"},
+                    "fulfilled_at": {"$max": "$fulfilled_at"},
+                    "fulfilled_content_type": {"$max": "$fulfilled_content_type"},
+                    "fulfilled_content_ref": {"$max": "$fulfilled_content_ref"},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "request_type": "$_id.request_type",
+                    "normalized_query": "$_id.normalized_query",
+                    "query_text": 1,
+                    "fulfilled_at": 1,
+                    "fulfilled_content_type": 1,
+                    "fulfilled_content_ref": 1,
+                }
+            },
+            {"$sort": {"fulfilled_at": -1}},
+            {"$limit": max(1, limit)},
+        ]
+        return list(self.content_requests.aggregate(pipeline))
+
+    def get_matching_open_requests(self, code: str, title: str) -> list[dict[str, Any]]:
+        code_norm = self._normalize_lookup(code)
+        title_norm = self._normalize_lookup(title)
+
+        matched_docs: list[dict[str, Any]] = []
+
+        for doc in self.content_requests.find(
+            {
+                "status": "open",
+                "request_type": "code",
+                "normalized_query": code_norm,
+            }
+        ):
+            normalized = self._doc_without_object_id(doc)
+            if normalized:
+                matched_docs.append(normalized)
+
+        for doc in self.content_requests.find(
+            {
+                "status": "open",
+                "request_type": "search",
+            }
+        ):
+            if not doc:
+                continue
+            normalized_query = str(doc.get("normalized_query") or "").strip()
+            if not normalized_query:
+                continue
+            if normalized_query in title_norm or title_norm in normalized_query:
+                normalized = self._doc_without_object_id(doc)
+                if normalized:
+                    matched_docs.append(normalized)
+
+        unique_by_id: dict[str, dict[str, Any]] = {}
+        for row in matched_docs:
+            row_id = str(row.get("id") or "").strip()
+            if row_id:
+                unique_by_id[row_id] = row
+        return list(unique_by_id.values())
+
+    def mark_requests_fulfilled(
+        self,
+        request_ids: list[str],
+        content_type: str,
+        content_ref: str,
+    ) -> int:
+        object_ids: list[ObjectId] = []
+        for request_id in request_ids:
+            object_id = self._to_object_id(request_id)
+            if object_id:
+                object_ids.append(object_id)
+        if not object_ids:
+            return 0
+
+        result = self.content_requests.update_many(
+            {"_id": {"$in": object_ids}},
+            {
+                "$set": {
+                    "status": "fulfilled",
+                    "fulfilled_at": utc_now_iso(),
+                    "fulfilled_content_type": content_type,
+                    "fulfilled_content_ref": content_ref,
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return int(result.modified_count)
+
+    def log_notification_attempt(
+        self,
+        user_tg_id: int,
+        request_id: str,
+        content_type: str,
+        content_ref: str,
+        status: str,
+        error_message: str = "",
+    ) -> None:
+        self.notification_log.insert_one(
+            {
+                "user_tg_id": user_tg_id,
+                "request_id": request_id,
+                "content_type": content_type,
+                "content_ref": content_ref,
+                "status": status,
+                "error_message": error_message[:300],
+                "created_at": utc_now_iso(),
+            }
+        )
+
+    def add_favorite(self, user_tg_id: int, content_type: str, content_ref: str) -> bool:
+        if content_type not in {"movie", "serial"}:
+            return False
+        now = utc_now_iso()
+        try:
+            self.favorites.insert_one(
+                {
+                    "user_tg_id": user_tg_id,
+                    "content_type": content_type,
+                    "content_ref": content_ref,
+                    "created_at": now,
+                }
+            )
+            return True
+        except DuplicateKeyError:
+            return False
+
+    def remove_favorite(self, user_tg_id: int, content_type: str, content_ref: str) -> bool:
+        result = self.favorites.delete_one(
+            {
+                "user_tg_id": user_tg_id,
+                "content_type": content_type,
+                "content_ref": content_ref,
+            }
+        )
+        return result.deleted_count > 0
+
+    def is_favorite(self, user_tg_id: int, content_type: str, content_ref: str) -> bool:
+        return (
+            self.favorites.find_one(
+                {
+                    "user_tg_id": user_tg_id,
+                    "content_type": content_type,
+                    "content_ref": content_ref,
+                },
+                {"_id": 1},
+            )
+            is not None
+        )
+
+    def list_favorites(self, user_tg_id: int, limit: int = 100) -> list[dict[str, Any]]:
+        cursor = self.favorites.find(
+            {"user_tg_id": user_tg_id},
+            {"content_type": 1, "content_ref": 1, "created_at": 1},
+        ).sort("created_at", DESCENDING)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+        rows = [self._doc_without_object_id(doc) for doc in cursor if doc]
+        result: list[dict[str, Any]] = []
+        for item in rows:
+            if not item:
+                continue
+            content_type = str(item.get("content_type") or "")
+            content_ref = str(item.get("content_ref") or "")
+            if content_type == "movie":
+                movie = self.get_movie_by_id(content_ref) or self.get_movie(content_ref)
+                if not movie:
+                    continue
+                result.append(
+                    {
+                        "favorite_id": item["id"],
+                        "content_type": "movie",
+                        "content_ref": movie["id"],
+                        "title": movie.get("title") or "-",
+                        "code": movie.get("code") or "",
+                        "year": movie.get("year"),
+                        "quality": movie.get("quality") or "",
+                    }
+                )
+            elif content_type == "serial":
+                serial = self.get_serial(content_ref) or self.get_serial_by_code(content_ref)
+                if not serial:
+                    continue
+                result.append(
+                    {
+                        "favorite_id": item["id"],
+                        "content_type": "serial",
+                        "content_ref": serial["id"],
+                        "title": serial.get("title") or "-",
+                        "code": serial.get("code") or "",
+                        "year": serial.get("year"),
+                        "quality": serial.get("quality") or "",
+                    }
+                )
+        return result
+
     def log_request(self, user_tg_id: int, movie_code: str, result: str) -> None:
         now = utc_now_iso()
         self.requests_log.insert_one(
@@ -390,6 +887,8 @@ class Database:
         serial_episodes = self.serial_episodes.count_documents({})
         channels = self.required_channels.count_documents({"is_active": True})
         requests = self.requests_log.count_documents({})
+        open_content_requests = self.content_requests.count_documents({"status": "open"})
+        favorites = self.favorites.count_documents({})
         return {
             "users": users,
             "movies": movies,
@@ -397,6 +896,8 @@ class Database:
             "serial_episodes": serial_episodes,
             "channels": channels,
             "requests": requests,
+            "open_content_requests": open_content_requests,
+            "favorites": favorites,
         }
 
 
@@ -408,6 +909,7 @@ class AddMovieState(StatesGroup):
     waiting_code = State()
     waiting_title = State()
     waiting_description = State()
+    waiting_metadata = State()
     waiting_media = State()
 
 
@@ -415,6 +917,7 @@ class AddSerialState(StatesGroup):
     waiting_code = State()
     waiting_title = State()
     waiting_description = State()
+    waiting_metadata = State()
     waiting_episode = State()
     waiting_preview_media = State()
     waiting_publish_channel = State()
@@ -432,12 +935,21 @@ class EditContentState(StatesGroup):
     waiting_code = State()
     waiting_movie_title = State()
     waiting_movie_description = State()
+    waiting_movie_metadata = State()
     waiting_movie_media = State()
     waiting_serial_episode = State()
 
 
 class BroadcastState(StatesGroup):
     waiting_message = State()
+
+
+class SearchState(StatesGroup):
+    waiting_query = State()
+
+
+class FilterState(StatesGroup):
+    waiting_input = State()
 
 
 def parse_admin_ids(value: str) -> list[int]:
@@ -462,9 +974,13 @@ BTN_LIST_MOVIES = "📚 Kino va serial ro'yxati"
 BTN_STATS = "📊 Statistika"
 BTN_ADD_ADMIN = "👤 Admin qo'shish"
 BTN_BROADCAST = "📣 Habar yuborish"
+BTN_REQUESTS = "📥 So'rovlar"
 BTN_BACK = "⬅️ Ortga"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
+BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
+BTN_FILTER = "🎛 Filter"
+BTN_FAVORITES = "⭐ Sevimlilarim"
 BOT_SIGNATURE = "@MirTopKinoBot"
 
 
@@ -528,7 +1044,13 @@ def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
             keyboard=[[KeyboardButton(text=BTN_ADMIN_PANEL)]],
             resize_keyboard=True,
         )
-    return ReplyKeyboardRemove()
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_FILTER)],
+            [KeyboardButton(text=BTN_FAVORITES)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
@@ -537,6 +1059,7 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_ADD_MOVIE), KeyboardButton(text=BTN_ADD_SERIAL)],
         [KeyboardButton(text=BTN_DEL_MOVIE), KeyboardButton(text=BTN_EDIT_CONTENT)],
         [KeyboardButton(text=BTN_LIST_MOVIES), KeyboardButton(text=BTN_BROADCAST)],
+        [KeyboardButton(text=BTN_REQUESTS)],
         [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_RANDOM_CODES)],
         [KeyboardButton(text=BTN_ADD_ADMIN)],
         [KeyboardButton(text=BTN_BACK)],
@@ -599,6 +1122,236 @@ def normalize_code(text: str) -> str:
     return text.strip()
 
 
+def normalize_lookup_text(value: str) -> str:
+    cleaned = re.sub(r"[^\w\s]+", " ", value.lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def parse_metadata_input(value: str) -> dict[str, Any] | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    if raw == "-":
+        return {"year": None, "quality": "", "genres": []}
+
+    parts = [part.strip() for part in raw.split("|")]
+    if len(parts) != 3:
+        return None
+
+    year_part, quality_part, genres_part = parts
+    year: int | None = None
+    if year_part and year_part != "-":
+        if not year_part.isdigit():
+            return None
+        year = int(year_part)
+        now_year = datetime.now(UTC).year
+        if year < 1900 or year > now_year + 1:
+            return None
+
+    quality = ""
+    if quality_part and quality_part != "-":
+        quality = quality_part[:40]
+
+    genres: list[str] = []
+    if genres_part and genres_part != "-":
+        genres = [genre.strip().lower() for genre in genres_part.split(",") if genre.strip()]
+        genres = sorted(dict.fromkeys(genres))[:10]
+
+    return {"year": year, "quality": quality, "genres": genres}
+
+
+def parse_filter_input(value: str) -> dict[str, Any] | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split("|")]
+    if len(parts) != 3:
+        return None
+    genres_part, year_part, quality_part = parts
+
+    genres: list[str] = []
+    if genres_part and genres_part != "-":
+        genres = [genre.strip().lower() for genre in genres_part.split(",") if genre.strip()]
+        genres = sorted(dict.fromkeys(genres))[:10]
+
+    year: int | None = None
+    if year_part and year_part != "-":
+        if not year_part.isdigit():
+            return None
+        year = int(year_part)
+        now_year = datetime.now(UTC).year
+        if year < 1900 or year > now_year + 1:
+            return None
+
+    quality = ""
+    if quality_part and quality_part != "-":
+        quality = quality_part[:40]
+
+    return {"genres": genres, "year": year, "quality": quality}
+
+
+def encode_payload_value(value: str) -> str:
+    data = value.encode("utf-8")
+    encoded = base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+    return encoded
+
+
+def decode_payload_value(value: str) -> str | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    padding = "=" * ((4 - len(raw) % 4) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((raw + padding).encode("ascii"))
+        return decoded.decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def compact_query_token(value: str) -> str:
+    normalized = normalize_lookup_text(value)
+    if not normalized:
+        return ""
+    if len(normalized) <= 40 and all(ch.isalnum() or ch in {"_", "-", " "} for ch in normalized):
+        return normalized
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:20]
+
+
+def format_meta_line(year: int | None, quality: str | None, genres: list[str] | None) -> str:
+    parts: list[str] = []
+    if year:
+        parts.append(str(year))
+    if quality:
+        parts.append(str(quality))
+    if genres:
+        parts.append(", ".join(genres))
+    return " | ".join(parts)
+
+
+def append_meta_to_caption(
+    caption: str | None,
+    year: int | None,
+    quality: str | None,
+    genres: list[str] | None,
+) -> str:
+    base = (caption or "").strip()
+    meta = format_meta_line(year, quality, genres)
+    if not meta:
+        return base
+    if base:
+        return f"{base}\n\n{meta}"
+    return meta
+
+
+def build_not_found_request_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📩 So'rov qoldirish", callback_data="req_create")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_movie_actions_kb(movie_id: str, is_favorite: bool) -> InlineKeyboardMarkup:
+    fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
+    fav_action = "del" if is_favorite else "add"
+    builder = InlineKeyboardBuilder()
+    builder.button(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_search_results_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup | None:
+    if not items:
+        return None
+    builder = InlineKeyboardBuilder()
+    for item in items:
+        content_type = str(item.get("content_type") or "").strip()
+        content_ref = str(item.get("id") or "").strip()
+        if not content_type or not content_ref:
+            continue
+        title = str(item.get("title") or "Noma'lum")
+        code = str(item.get("code") or "")
+        year = item.get("year")
+        quality = str(item.get("quality") or "")
+        meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
+        label = title
+        if code:
+            label = f"{code} - {title}"
+        if meta:
+            label = f"{label} ({meta})"
+        if len(label) > 60:
+            label = f"{label[:57]}..."
+        icon = "🎬" if content_type == "movie" else "📺"
+        builder.button(text=f"{icon} {label}", callback_data=f"open:{content_type}:{content_ref}")
+    builder.adjust(1)
+    markup = builder.as_markup()
+    if not markup.inline_keyboard:
+        return None
+    return markup
+
+
+def build_favorites_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup | None:
+    if not items:
+        return None
+    builder = InlineKeyboardBuilder()
+    for item in items:
+        content_type = str(item.get("content_type") or "")
+        content_ref = str(item.get("content_ref") or "")
+        title = str(item.get("title") or "Noma'lum")
+        code = str(item.get("code") or "")
+        display = f"{code} - {title}" if code else title
+        if len(display) > 48:
+            display = f"{display[:45]}..."
+        builder.row(
+            InlineKeyboardButton(
+                text=f"▶️ {display}",
+                callback_data=f"open:{content_type}:{content_ref}",
+            ),
+            InlineKeyboardButton(
+                text="❌",
+                callback_data=f"fav:del:{content_type}:{content_ref}",
+            ),
+        )
+    markup = builder.as_markup()
+    if not markup.inline_keyboard:
+        return None
+    return markup
+
+
+def build_filter_page_kb(
+    items: list[dict[str, Any]],
+    page: int,
+    page_size: int = 8,
+) -> InlineKeyboardMarkup | None:
+    if not items:
+        return None
+    total_pages = max(1, (len(items) + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    start = page * page_size
+    chunk = items[start:start + page_size]
+
+    builder = InlineKeyboardBuilder()
+    for item in chunk:
+        content_type = str(item.get("content_type") or "")
+        content_ref = str(item.get("id") or "")
+        title = str(item.get("title") or "Noma'lum")
+        code = str(item.get("code") or "")
+        short = f"{code} - {title}" if code else title
+        if len(short) > 58:
+            short = f"{short[:55]}..."
+        icon = "🎬" if content_type == "movie" else "📺"
+        builder.button(text=f"{icon} {short}", callback_data=f"open:{content_type}:{content_ref}")
+    builder.adjust(1)
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"filter_page:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="filter_page:noop"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"filter_page:{page + 1}"))
+    builder.row(*nav_row)
+    return builder.as_markup()
+
+
 def append_signature(caption: str | None) -> str:
     base = (caption or "").strip()
     if base:
@@ -632,16 +1385,38 @@ def build_movie_caption(title: str | None, description: str | None) -> str:
     return title_text or description_text
 
 
-def build_serial_caption(title: str | None, description: str | None, episodes_count: int) -> str:
+def build_serial_caption(
+    title: str | None,
+    description: str | None,
+    episodes_count: int,
+    year: int | None = None,
+    quality: str | None = None,
+    genres: list[str] | None = None,
+) -> str:
     base = build_movie_caption(title, description)
+    meta = format_meta_line(year, quality, genres)
     tail = f"🎞 Qismlar soni: {episodes_count}"
+    if meta:
+        tail = f"{meta}\n{tail}"
     if base:
         return f"{base}\n\n{tail}"
     return tail
 
 
-def build_serial_episodes_kb(serial_id: str, episode_numbers: list[int]) -> InlineKeyboardMarkup:
+def build_serial_episodes_kb(
+    serial_id: str,
+    episode_numbers: list[int],
+    is_favorite: bool = False,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
+    fav_action = "del" if is_favorite else "add"
+    builder.row(
+        InlineKeyboardButton(
+            text=fav_text,
+            callback_data=f"fav:{fav_action}:serial:{serial_id}",
+        )
+    )
     for number in episode_numbers:
         builder.button(text=str(number), callback_data=f"serial_ep:{serial_id}:{number}")
     builder.adjust(5)
@@ -874,7 +1649,19 @@ def parse_serial_payload(payload: str | None) -> str | None:
     return serial_id or None
 
 
-async def send_serial_selector_by_id(message: Message, serial_id: str) -> bool:
+def parse_movie_payload(payload: str | None) -> str | None:
+    value = (payload or "").strip()
+    if not value.startswith("m_"):
+        return None
+    movie_id = value[2:].strip()
+    return movie_id or None
+
+
+def build_start_deeplink(username: str, payload: str) -> str:
+    return f"https://t.me/{username}?start={payload}"
+
+
+async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: int | None = None) -> bool:
     serial = db.get_serial(serial_id)
     if not serial:
         await message.answer("❌ Serial topilmadi.")
@@ -886,14 +1673,21 @@ async def send_serial_selector_by_id(message: Message, serial_id: str) -> bool:
         return False
 
     episode_numbers = [row["episode_number"] for row in episodes]
+    requester_id = user_id
+    if requester_id is None and message.from_user and not message.from_user.is_bot:
+        requester_id = message.from_user.id
+    is_favorite = bool(requester_id and db.is_favorite(requester_id, "serial", serial["id"]))
     serial_caption = build_serial_caption(
         serial["title"],
         serial["description"],
         episodes_count=len(episode_numbers),
+        year=serial.get("year") if isinstance(serial.get("year"), int) else None,
+        quality=str(serial.get("quality") or ""),
+        genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
     await message.answer(
         f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
-        reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers),
+        reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers, is_favorite=is_favorite),
     )
     return True
 
@@ -950,6 +1744,131 @@ async def send_media_to_chat(
         return
 
     await bot.send_message(chat_id=chat_id, text=f"{final_caption}\n\nID: {file_id}", reply_markup=reply_markup)
+
+
+BOT_USERNAME_CACHE: str | None = None
+
+
+async def get_bot_username(bot: Bot) -> str | None:
+    global BOT_USERNAME_CACHE
+    if BOT_USERNAME_CACHE:
+        return BOT_USERNAME_CACHE
+    me = await bot.get_me()
+    BOT_USERNAME_CACHE = me.username
+    return BOT_USERNAME_CACHE
+
+
+async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        await message.answer("❌ Kino topilmadi.")
+        return False
+    caption = append_meta_to_caption(
+        build_movie_caption(movie["title"], movie["description"]),
+        movie.get("year") if isinstance(movie.get("year"), int) else None,
+        str(movie.get("quality") or ""),
+        [str(g) for g in movie.get("genres", []) if str(g).strip()],
+    )
+    requester_id = user_id
+    if requester_id is None and message.from_user and not message.from_user.is_bot:
+        requester_id = message.from_user.id
+    is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", movie["id"]))
+    await send_stored_media(
+        message,
+        media_type=movie["media_type"],
+        file_id=movie["file_id"],
+        caption=caption if caption else None,
+        reply_markup=build_movie_actions_kb(movie["id"], is_favorite=is_favorite),
+    )
+    return True
+
+
+async def notify_requesters_for_content(
+    bot: Bot,
+    content_type: str,
+    content_ref: str,
+    code: str,
+    title: str,
+    *,
+    movie: dict[str, Any] | None = None,
+    serial_id: str | None = None,
+) -> tuple[int, int]:
+    matched_requests = db.get_matching_open_requests(code=code, title=title)
+    if not matched_requests:
+        return 0, 0
+
+    username = await get_bot_username(bot)
+    grouped_by_user: dict[int, list[dict[str, Any]]] = {}
+    for row in matched_requests:
+        user_tg_id = row.get("user_tg_id")
+        if not isinstance(user_tg_id, int):
+            continue
+        grouped_by_user.setdefault(user_tg_id, []).append(row)
+
+    delivered = 0
+    failed = 0
+    all_request_ids: list[str] = []
+    for req in matched_requests:
+        request_id = str(req.get("id") or "").strip()
+        if request_id:
+            all_request_ids.append(request_id)
+
+    for user_id, user_requests in grouped_by_user.items():
+        request_ids = [str(r.get("id") or "").strip() for r in user_requests if r.get("id")]
+        try:
+            if content_type == "movie" and movie:
+                caption = append_meta_to_caption(
+                    build_movie_caption(movie.get("title"), movie.get("description")),
+                    movie.get("year") if isinstance(movie.get("year"), int) else None,
+                    str(movie.get("quality") or ""),
+                    [str(g) for g in movie.get("genres", []) if str(g).strip()],
+                )
+                await send_media_to_chat(
+                    bot=bot,
+                    chat_ref=str(user_id),
+                    media_type=str(movie.get("media_type") or ""),
+                    file_id=str(movie.get("file_id") or ""),
+                    caption=caption if caption else None,
+                    reply_markup=build_movie_actions_kb(str(movie.get("id") or ""), is_favorite=False),
+                )
+            elif content_type == "serial" and serial_id and username:
+                deeplink = build_start_deeplink(username, f"s_{serial_id}")
+                kb = InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="📥 Qismlarni ochish", url=deeplink)]]
+                )
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {code}",
+                    reply_markup=kb,
+                )
+            else:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {code}",
+                )
+            delivered += 1
+            for request_id in request_ids:
+                db.log_notification_attempt(
+                    user_tg_id=user_id,
+                    request_id=request_id,
+                    content_type=content_type,
+                    content_ref=content_ref,
+                    status="delivered",
+                )
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            failed += 1
+            for request_id in request_ids:
+                db.log_notification_attempt(
+                    user_tg_id=user_id,
+                    request_id=request_id,
+                    content_type=content_type,
+                    content_ref=content_ref,
+                    status="failed",
+                    error_message=str(exc),
+                )
+
+    db.mark_requests_fulfilled(all_request_ids, content_type=content_type, content_ref=content_ref)
+    return delivered, failed
 
 
 load_dotenv()
@@ -1019,6 +1938,44 @@ async def ask_for_subscription(message: Message, channels: list[dict[str, Any]])
     await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
 
 
+def reduce_result_items(items: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
+    reduced: list[dict[str, Any]] = []
+    for row in items[: max(1, limit)]:
+        reduced.append(
+            {
+                "content_type": str(row.get("content_type") or ""),
+                "id": str(row.get("id") or ""),
+                "code": str(row.get("code") or ""),
+                "title": str(row.get("title") or ""),
+                "year": row.get("year"),
+                "quality": str(row.get("quality") or ""),
+            }
+        )
+    return reduced
+
+
+async def send_filter_page_message(
+    message: Message,
+    results: list[dict[str, Any]],
+    page: int,
+) -> None:
+    total = len(results)
+    if total == 0:
+        await message.answer("📭 Filter bo'yicha kontent topilmadi.")
+        return
+    total_pages = max(1, (total + 8 - 1) // 8)
+    safe_page = max(0, min(page, total_pages - 1))
+    text = (
+        f"🎛 Filter natijalari: {total} ta\n"
+        f"Sahifa: {safe_page + 1}/{total_pages}\n"
+        "Kerakli kontentni tanlang:"
+    )
+    await message.answer(
+        text,
+        reply_markup=build_filter_page_kb(results, safe_page),
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
@@ -1027,6 +1984,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     db.add_user(message.from_user.id, message.from_user.full_name)
     payload = parse_start_payload(message.text)
     serial_id = parse_serial_payload(payload)
+    movie_id = parse_movie_payload(payload)
     if serial_id:
         ok, channels = await ensure_subscription(message.from_user.id, message.bot)
         if not ok:
@@ -1036,12 +1994,24 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         sent = await send_serial_selector_by_id(message, serial_id)
         if sent:
             return
+    elif movie_id:
+        ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+        if not ok:
+            await state.update_data(pending_movie_id=movie_id)
+            await ask_for_subscription(message, channels)
+            return
+        try:
+            sent = await send_movie_by_id(message, movie_id)
+        except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+            sent = False
+        if sent:
+            return
 
     admin = db.is_admin(message.from_user.id)
     text = (
         "🎬 Assalomu alaykum, Kino Qidiruvi Botga xush kelibsiz!\n\n"
-        "🔎 Kino yoki serial kodini chatga yozing.\n"
-        "⚡ Bot avtomatik tekshiradi va sizga natijani yuboradi."
+        "🔎 Kino yoki serial kodini yuboring.\n"
+        "Yoki tugmalar orqali nom bo'yicha qidiruv, filter va sevimlilarni ishlating."
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
 
@@ -1055,11 +2025,23 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
     if ok:
         state_data = await state.get_data()
         pending_serial_id = str(state_data.get("pending_serial_id") or "").strip()
+        pending_movie_id = str(state_data.get("pending_movie_id") or "").strip()
         if pending_serial_id and callback.message:
             cleaned_state = dict(state_data)
             cleaned_state.pop("pending_serial_id", None)
             await state.set_data(cleaned_state)
-            sent = await send_serial_selector_by_id(callback.message, pending_serial_id)
+            sent = await send_serial_selector_by_id(callback.message, pending_serial_id, user.id)
+            if sent:
+                await callback.answer("✅ Tasdiqlandi")
+                return
+        if pending_movie_id and callback.message:
+            cleaned_state = dict(state_data)
+            cleaned_state.pop("pending_movie_id", None)
+            await state.set_data(cleaned_state)
+            try:
+                sent = await send_movie_by_id(callback.message, pending_movie_id, user.id)
+            except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                sent = False
             if sent:
                 await callback.answer("✅ Tasdiqlandi")
                 return
@@ -1422,6 +2404,39 @@ async def add_movie_description(message: Message, state: FSMContext) -> None:
         return
     description = "" if text == "-" else text
     await state.update_data(description=description)
+    await state.set_state(AddMovieState.waiting_metadata)
+    await message.answer(
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "Masalan: 2024|1080p|action,drama\n"
+        "Agar kerak bo'lmasa: -"
+    )
+
+
+@router.message(AddMovieState.waiting_metadata)
+async def add_movie_metadata(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+
+    metadata = parse_metadata_input(text)
+    if metadata is None:
+        await message.answer(
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+            "Masalan: 2024|1080p|action,drama\n"
+            "Yoki: -"
+        )
+        return
+
+    await state.update_data(
+        year=metadata["year"],
+        quality=metadata["quality"],
+        genres=metadata["genres"],
+    )
     await state.set_state(AddMovieState.waiting_media)
     await message.answer(
         "📤 Endi media yuboring:\n"
@@ -1456,11 +2471,29 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         description=data.get("description", ""),
         media_type=media_type,
         file_id=file_id,
+        year=data.get("year"),
+        quality=str(data.get("quality") or ""),
+        genres=[str(g) for g in data.get("genres", []) if str(g).strip()],
     )
     created = db.add_movie(movie)
     await state.clear()
     if created:
-        await message.answer("✅ Kino muvaffaqiyatli saqlandi!", reply_markup=admin_menu_kb())
+        saved_movie = db.get_movie(movie.code)
+        delivered, failed = await notify_requesters_for_content(
+            bot=message.bot,
+            content_type="movie",
+            content_ref=str((saved_movie or {}).get("id") or movie.code),
+            code=movie.code,
+            title=movie.title,
+            movie=saved_movie,
+        )
+        note = ""
+        if delivered or failed:
+            note = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+        await message.answer(
+            f"✅ Kino muvaffaqiyatli saqlandi!{note}",
+            reply_markup=admin_menu_kb(),
+        )
     else:
         await message.answer("⚠️ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
 
@@ -1531,17 +2564,54 @@ async def add_serial_description(message: Message, state: FSMContext) -> None:
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     description = "" if text == "-" else text
+    await state.update_data(
+        description=description,
+    )
+    await state.set_state(AddSerialState.waiting_metadata)
+    await message.answer(
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "Masalan: 2024|1080p|action,drama\n"
+        "Agar kerak bo'lmasa: -"
+    )
+
+
+@router.message(AddSerialState.waiting_metadata)
+async def add_serial_metadata(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+
+    metadata = parse_metadata_input(text)
+    if metadata is None:
+        await message.answer(
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+            "Masalan: 2024|1080p|action,drama\n"
+            "Yoki: -"
+        )
+        return
+
     data = await state.get_data()
     code = data.get("code")
     title = data.get("title")
+    description = str(data.get("description") or "")
     if not code or not title:
         await state.clear()
         await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
+
     serial_id = db.add_serial(
         code=str(code),
         title=str(title),
         description=description,
+        year=metadata["year"],
+        quality=metadata["quality"],
+        genres=metadata["genres"],
     )
     if serial_id is None:
         await state.clear()
@@ -1549,7 +2619,9 @@ async def add_serial_description(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(
-        description=description,
+        year=metadata["year"],
+        quality=metadata["quality"],
+        genres=metadata["genres"],
         serial_id=serial_id,
         next_episode=1,
         episodes_added=0,
@@ -1634,16 +2706,34 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
 
     text = (message.text or "").strip()
     if is_cancel_text(text):
+        data = await state.get_data()
+        serial_id = str(data.get("serial_id") or "").strip()
+        if serial_id:
+            db.delete_serial(serial_id)
         await state.clear()
-        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
         return
 
     if text == "-":
         data = await state.get_data()
         episodes_added = int(data.get("episodes_added", 0))
+        serial_id = str(data.get("serial_id") or "").strip()
+        serial = db.get_serial(serial_id) if serial_id else None
+        notify_text = ""
+        if serial:
+            delivered, failed = await notify_requesters_for_content(
+                bot=message.bot,
+                content_type="serial",
+                content_ref=serial_id,
+                code=str(serial.get("code") or ""),
+                title=str(serial.get("title") or "Serial"),
+                serial_id=serial_id,
+            )
+            if delivered or failed:
+                notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}",
+            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
         return
@@ -1676,8 +2766,12 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
 
     text = (message.text or "").strip()
     if is_cancel_text(text):
+        data = await state.get_data()
+        serial_id = str(data.get("serial_id") or "").strip()
+        if serial_id:
+            db.delete_serial(serial_id)
         await state.clear()
-        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
         return
 
     data = await state.get_data()
@@ -1694,9 +2788,22 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         return
 
     if text == "-":
+        notify_text = ""
+        serial = db.get_serial(serial_id) if serial_id else None
+        if serial:
+            delivered, failed = await notify_requesters_for_content(
+                bot=message.bot,
+                content_type="serial",
+                content_ref=serial_id,
+                code=str(serial.get("code") or ""),
+                title=str(serial.get("title") or "Serial"),
+                serial_id=serial_id,
+            )
+            if delivered or failed:
+                notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}",
+            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
         return
@@ -1728,6 +2835,13 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         caption_lines = [f"🎬 {title or 'Serial'}"]
         if description:
             caption_lines.append(description)
+        meta = format_meta_line(
+            data.get("year") if isinstance(data.get("year"), int) else None,
+            str(data.get("quality") or ""),
+            [str(g) for g in data.get("genres", []) if str(g).strip()],
+        )
+        if meta:
+            caption_lines.append(meta)
         caption_lines.append(f"🎞 Jami qismlar: {episodes_added}")
         caption_lines.append("Tomosha 👇")
         caption = "\n\n".join(caption_lines)
@@ -1740,9 +2854,20 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
             caption=caption,
             reply_markup=keyboard,
         )
+        notify_text = ""
+        delivered, failed = await notify_requesters_for_content(
+            bot=message.bot,
+            content_type="serial",
+            content_ref=serial_id,
+            code=str(data.get("code") or ""),
+            title=title or "Serial",
+            serial_id=serial_id,
+        )
+        if delivered or failed:
+            notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"✅ Serial saqlandi va kanalga joylandi: {chat.title or channel_ref}",
+            f"✅ Serial saqlandi va kanalga joylandi: {chat.title or channel_ref}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
     except (TelegramBadRequest, TelegramForbiddenError, ValueError):
@@ -1826,6 +2951,9 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
             movie_description=current_description,
             movie_media_type=str(movie.get("media_type") or ""),
             movie_file_id=str(movie.get("file_id") or ""),
+            movie_year=movie.get("year"),
+            movie_quality=str(movie.get("quality") or ""),
+            movie_genres=[str(g) for g in movie.get("genres", []) if str(g).strip()],
         )
         await state.set_state(EditContentState.waiting_movie_title)
         await message.answer(
@@ -1907,6 +3035,51 @@ async def edit_movie_description(message: Message, state: FSMContext) -> None:
     old_description = str(data.get("movie_description") or "")
     new_description = old_description if text == "-" else text
     await state.update_data(movie_new_description=new_description)
+    await state.set_state(EditContentState.waiting_movie_metadata)
+    await message.answer(
+        "🏷 Yangi metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "Masalan: 2024|1080p|action,drama\n"
+        "O'zgartirmaslik uchun: -"
+    )
+
+
+@router.message(EditContentState.waiting_movie_metadata)
+async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    data = await state.get_data()
+    old_year = data.get("movie_year")
+    old_quality = str(data.get("movie_quality") or "")
+    old_genres = [str(g) for g in data.get("movie_genres", []) if str(g).strip()]
+
+    if text == "-":
+        year = old_year if isinstance(old_year, int) else None
+        quality = old_quality
+        genres = old_genres
+    else:
+        metadata = parse_metadata_input(text)
+        if metadata is None:
+            await message.answer(
+                "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+                "Masalan: 2024|1080p|action,drama\n"
+                "Yoki: -"
+            )
+            return
+        year = metadata["year"]
+        quality = metadata["quality"]
+        genres = metadata["genres"]
+
+    await state.update_data(
+        movie_new_year=year,
+        movie_new_quality=quality,
+        movie_new_genres=genres,
+    )
     await state.set_state(EditContentState.waiting_movie_media)
     await message.answer(
         "🎞 Yangi media yuboring (video/document/photo yoki file_id/link).\n"
@@ -1947,6 +3120,10 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
 
     title = str(data.get("movie_new_title") or data.get("movie_title") or "").strip()
     description = str(data.get("movie_new_description") or data.get("movie_description") or "").strip()
+    year_raw = data.get("movie_new_year", data.get("movie_year"))
+    year = int(year_raw) if isinstance(year_raw, int) else None
+    quality = str(data.get("movie_new_quality") or data.get("movie_quality") or "").strip()
+    genres = [str(g) for g in data.get("movie_new_genres", data.get("movie_genres", [])) if str(g).strip()]
     if not title or not media_type or not file_id:
         await state.clear()
         await message.answer("⚠️ Tahrirlash uchun ma'lumot yetarli emas.", reply_markup=admin_menu_kb())
@@ -1958,6 +3135,9 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
         description=description,
         media_type=media_type,
         file_id=file_id,
+        year=year,
+        quality=quality,
+        genres=genres,
     )
     await state.clear()
     if updated:
@@ -2109,7 +3289,13 @@ async def movie_list(message: Message) -> None:
         for item in movies:
             code = item.get("code", "-")
             title = item.get("title") or "Noma'lum"
-            lines.append(f"{code} - {title}")
+            meta = format_meta_line(
+                item.get("year") if isinstance(item.get("year"), int) else None,
+                str(item.get("quality") or ""),
+                None,
+            )
+            suffix = f" ({meta})" if meta else ""
+            lines.append(f"{code} - {title}{suffix}")
     else:
         lines.append("— Kinolar yo'q")
 
@@ -2119,7 +3305,13 @@ async def movie_list(message: Message) -> None:
         for item in serials:
             code = item.get("code", "-")
             title = item.get("title") or "Noma'lum"
-            lines.append(f"{code} - {title}")
+            meta = format_meta_line(
+                item.get("year") if isinstance(item.get("year"), int) else None,
+                str(item.get("quality") or ""),
+                None,
+            )
+            suffix = f" ({meta})" if meta else ""
+            lines.append(f"{code} - {title}{suffix}")
     else:
         lines.append("— Seriallar yo'q")
 
@@ -2140,9 +3332,46 @@ async def stats(message: Message) -> None:
         f"📺 Seriallar: {s['serials']}\n"
         f"🎞 Serial qismlari: {s['serial_episodes']}\n"
         f"📢 Majburiy kanallar: {s['channels']}\n"
-        f"📥 So'rovlar: {s['requests']}"
+        f"📥 Kod so'rovlari: {s['requests']}\n"
+        f"📝 Ochiq kontent so'rovlari: {s['open_content_requests']}\n"
+        f"⭐ Sevimlilar: {s['favorites']}"
     )
     await message.answer(text)
+
+
+@router.message(F.text.in_({BTN_REQUESTS, "So'rovlar"}))
+async def requests_dashboard(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+
+    open_topics = db.list_open_request_topics(limit=20)
+    fulfilled_topics = db.list_recent_fulfilled_topics(limit=8)
+
+    lines: list[str] = ["📥 Kontent so'rovlari paneli", ""]
+    lines.append("🔥 Ochiq so'rovlar (top):")
+    if open_topics:
+        for idx, row in enumerate(open_topics, start=1):
+            req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
+            query = str(row.get("query_text") or row.get("normalized_query") or "-")
+            total = int(row.get("total_requests") or 0)
+            users_count = int(row.get("users_count") or 0)
+            lines.append(f"{idx}. [{req_type}] {query} | so'rov: {total} | user: {users_count}")
+    else:
+        lines.append("— Ochiq so'rovlar yo'q")
+
+    lines.append("")
+    lines.append("✅ Oxirgi yopilganlar:")
+    if fulfilled_topics:
+        for row in fulfilled_topics:
+            req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
+            query = str(row.get("query_text") or row.get("normalized_query") or "-")
+            fulfilled_type = str(row.get("fulfilled_content_type") or "-")
+            lines.append(f"• [{req_type}] {query} -> {fulfilled_type}")
+    else:
+        lines.append("— Yaqinda yopilgan so'rov yo'q")
+
+    for chunk in split_text_chunks("\n".join(lines)):
+        await message.answer(chunk)
 
 
 @router.message(F.text.in_({BTN_ADD_ADMIN, "Admin qo'shish"}))
@@ -2174,6 +3403,420 @@ async def add_admin_finish(message: Message, state: FSMContext) -> None:
         await message.answer("Bu foydalanuvchi allaqachon admin.", reply_markup=admin_menu_kb())
 
 
+@router.message(F.text.in_({BTN_SEARCH_NAME, "Nom bo'yicha qidirish"}))
+async def search_by_name_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+    await state.set_state(SearchState.waiting_query)
+    await message.answer(
+        "🔎 Qidiriladigan kino/serial nomini yuboring.\n"
+        "Bekor qilish uchun: ❌ Bekor qilish",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(SearchState.waiting_query)
+async def search_by_name_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer(
+            "❌ Bekor qilindi.",
+            reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
+        )
+        return
+    if len(text) < 2:
+        await message.answer("Kamida 2 ta belgi kiriting.")
+        return
+
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+
+    results = db.search_content(query=text, limit=20)
+    if not results:
+        await state.update_data(
+            pending_request_query=text,
+            pending_request_type="search",
+        )
+        await message.answer(
+            "📭 Qidiruv bo'yicha natija topilmadi.\n"
+            "Xohlasangiz, so'rov qoldiring. Kontent qo'shilsa bot sizga yuboradi.",
+            reply_markup=build_not_found_request_kb(),
+        )
+        return
+
+    await state.clear()
+    kb = build_search_results_kb(results)
+    await message.answer(
+        f"✅ Topildi: {len(results)} ta natija.\nKerakli kontentni tanlang:",
+        reply_markup=kb,
+    )
+
+
+@router.message(F.text.in_({BTN_FILTER, "Filter"}))
+async def filter_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+    await state.set_state(FilterState.waiting_input)
+    await message.answer(
+        "🎛 Filter formatini yuboring: janrlar|yil|sifat\n"
+        "Masalan: action,drama|2024|1080p\n"
+        "Keraksiz maydon uchun `-` yozing.\n"
+        "Masalan: -|2023|-\n"
+        "Bekor qilish: ❌ Bekor qilish",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(FilterState.waiting_input)
+async def filter_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer(
+            "❌ Bekor qilindi.",
+            reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
+        )
+        return
+
+    parsed = parse_filter_input(text)
+    if parsed is None:
+        await message.answer(
+            "⚠️ Format noto'g'ri.\n"
+            "To'g'ri format: janrlar|yil|sifat\n"
+            "Masalan: action,drama|2024|1080p\n"
+            "Yoki: -|2024|-"
+        )
+        return
+
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+
+    results = db.search_content(
+        query="",
+        limit=100,
+        year=parsed["year"],
+        quality=parsed["quality"],
+        genres=parsed["genres"],
+    )
+    reduced = reduce_result_items(results, limit=100)
+    await state.set_state(None)
+    await state.set_data(
+        {
+            "filter_results": reduced,
+            "filter_page": 0,
+        }
+    )
+    await send_filter_page_message(message, reduced, page=0)
+
+
+@router.message(F.text.in_({BTN_FAVORITES, "Sevimlilarim"}))
+async def list_favorites(message: Message) -> None:
+    if not message.from_user:
+        return
+    favorites = db.list_favorites(message.from_user.id, limit=100)
+    if not favorites:
+        await message.answer("📭 Sevimlilar ro'yxati bo'sh.")
+        return
+    await message.answer(
+        f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
+        reply_markup=build_favorites_kb(favorites),
+    )
+
+
+@router.callback_query(F.data.startswith("filter_page:"))
+async def filter_page(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    _, raw_page = callback.data.split(":", 1)
+    if raw_page == "noop":
+        await callback.answer()
+        return
+    if not raw_page.isdigit():
+        await callback.answer("Xatolik")
+        return
+
+    page = int(raw_page)
+    data = await state.get_data()
+    results = data.get("filter_results", [])
+    if not isinstance(results, list) or not results:
+        await callback.answer("Natijalar topilmadi", show_alert=True)
+        return
+    total = len(results)
+    total_pages = max(1, (total + 8 - 1) // 8)
+    safe_page = max(0, min(page, total_pages - 1))
+    await state.update_data(filter_page=safe_page)
+    text = (
+        f"🎛 Filter natijalari: {total} ta\n"
+        f"Sahifa: {safe_page + 1}/{total_pages}\n"
+        "Kerakli kontentni tanlang:"
+    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=build_filter_page_kb(results, safe_page),
+        )
+    except TelegramBadRequest:
+        await callback.message.answer(
+            text,
+            reply_markup=build_filter_page_kb(results, safe_page),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "req_create")
+async def create_content_request(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user:
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    query_text = str(data.get("pending_request_query") or "").strip()
+    request_type = str(data.get("pending_request_type") or "search").strip()
+    if not query_text or request_type not in {"code", "search"}:
+        await callback.answer("So'rov ma'lumoti topilmadi", show_alert=True)
+        return
+
+    try:
+        created, count = db.add_or_increment_content_request(
+            user_tg_id=callback.from_user.id,
+            query_text=query_text,
+            request_type=request_type,
+        )
+    except ValueError:
+        await callback.answer("So'rov xato", show_alert=True)
+        return
+
+    cleaned = dict(data)
+    cleaned.pop("pending_request_query", None)
+    cleaned.pop("pending_request_type", None)
+    await state.set_data(cleaned)
+
+    if callback.message:
+        if created:
+            await callback.message.answer(
+                "✅ So'rov qabul qilindi.\n"
+                "Kontent qo'shilsa sizga avtomatik yuboriladi."
+            )
+        else:
+            await callback.message.answer(
+                f"✅ So'rov yangilandi (siz bu so'rovni {count} marta yuborgansiz)."
+            )
+    await callback.answer("So'rov saqlandi")
+
+
+@router.callback_query(F.data.startswith("fav:"))
+async def favorite_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 3)
+    if len(parts) != 4:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+    _, action, content_type, content_ref = parts
+    if action not in {"add", "del"} or content_type not in {"movie", "serial"} or not content_ref:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+
+    if action == "add":
+        if content_type == "movie" and not db.get_movie_by_id(content_ref):
+            await callback.answer("Kino topilmadi", show_alert=True)
+            return
+        if content_type == "serial" and not db.get_serial(content_ref):
+            await callback.answer("Serial topilmadi", show_alert=True)
+            return
+
+    if action == "add":
+        created = db.add_favorite(callback.from_user.id, content_type, content_ref)
+        await callback.answer("⭐ Sevimlilarga qo'shildi" if created else "ℹ️ Allaqachon sevimlida")
+    else:
+        removed = db.remove_favorite(callback.from_user.id, content_type, content_ref)
+        await callback.answer("💔 Sevimlidan olindi" if removed else "ℹ️ Sevimlida topilmadi")
+
+    if not callback.message:
+        return
+
+    current_text = (callback.message.text or "").strip().lower()
+    if current_text.startswith("⭐ sevimlilar ro'yxati"):
+        favorites = db.list_favorites(callback.from_user.id, limit=100)
+        if favorites:
+            await callback.message.edit_text(
+                f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
+                reply_markup=build_favorites_kb(favorites),
+            )
+        else:
+            await callback.message.edit_text("📭 Sevimlilar ro'yxati bo'sh.")
+        return
+
+    try:
+        if content_type == "movie":
+            is_favorite = db.is_favorite(callback.from_user.id, "movie", content_ref)
+            await callback.message.edit_reply_markup(
+                reply_markup=build_movie_actions_kb(content_ref, is_favorite),
+            )
+        else:
+            serial = db.get_serial(content_ref)
+            if serial:
+                episodes = db.list_serial_episodes(content_ref)
+                episode_numbers = [row["episode_number"] for row in episodes]
+                is_favorite = db.is_favorite(callback.from_user.id, "serial", content_ref)
+                await callback.message.edit_reply_markup(
+                    reply_markup=build_serial_episodes_kb(
+                        serial_id=content_ref,
+                        episode_numbers=episode_numbers,
+                        is_favorite=is_favorite,
+                    )
+                )
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data.startswith("open:"))
+async def open_content_from_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+    _, content_type, content_ref = parts
+    if content_type not in {"movie", "serial"} or not content_ref:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+
+    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
+    if not ok:
+        await callback.message.answer(
+            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
+            reply_markup=build_subscribe_keyboard(channels),
+        )
+        await callback.answer("Obuna kerak")
+        return
+
+    try:
+        if content_type == "movie":
+            sent = await send_movie_by_id(callback.message, content_ref, callback.from_user.id)
+            if not sent:
+                await callback.answer("Kino topilmadi", show_alert=True)
+                return
+        else:
+            sent = await send_serial_selector_by_id(callback.message, content_ref, callback.from_user.id)
+            if not sent:
+                await callback.answer("Serial topilmadi", show_alert=True)
+                return
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        await callback.answer("Xatolik", show_alert=True)
+        return
+
+    await callback.answer("Yuborildi")
+
+
+@router.inline_query()
+async def inline_search(inline_query: InlineQuery) -> None:
+    if not inline_query.from_user:
+        await inline_query.answer([], is_personal=True, cache_time=1)
+        return
+
+    query = (inline_query.query or "").strip()
+    if len(query) < 2:
+        await inline_query.answer(
+            [],
+            is_personal=True,
+            cache_time=1,
+            switch_pm_text="Botda qidirishni ochish",
+            switch_pm_parameter="inline",
+        )
+        return
+
+    ok, _ = await ensure_subscription(inline_query.from_user.id, inline_query.bot)
+    if not ok:
+        await inline_query.answer(
+            [],
+            is_personal=True,
+            cache_time=1,
+            switch_pm_text="Avval obuna bo'ling",
+            switch_pm_parameter="start",
+        )
+        return
+
+    username = await get_bot_username(inline_query.bot)
+    if not username:
+        await inline_query.answer([], is_personal=True, cache_time=1)
+        return
+
+    items = db.search_content(query=query, limit=20)
+    if not items:
+        await inline_query.answer(
+            [],
+            is_personal=True,
+            cache_time=3,
+            switch_pm_text="Natija topilmadi. Botda so'rov qoldiring",
+            switch_pm_parameter="search",
+        )
+        return
+
+    answers: list[InlineQueryResultArticle] = []
+    for item in items:
+        content_type = str(item.get("content_type") or "")
+        content_id = str(item.get("id") or "")
+        if content_type not in {"movie", "serial"} or not content_id:
+            continue
+        payload = f"m_{content_id}" if content_type == "movie" else f"s_{content_id}"
+        deeplink = build_start_deeplink(username, payload)
+        title = str(item.get("title") or "Noma'lum")
+        code = str(item.get("code") or "")
+        year = item.get("year")
+        quality = str(item.get("quality") or "")
+        meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
+
+        article_title = f"{'🎬' if content_type == 'movie' else '📺'} {title}"
+        if code:
+            article_title = f"{article_title} [{code}]"
+        description = meta or "Botda ochish uchun bosing"
+        content_text = f"{title}\nKod: {code or '-'}\n\nBotda ochish: {deeplink}"
+
+        result_id = hashlib.sha1(f"{content_type}:{content_id}:{query}".encode("utf-8")).hexdigest()[:32]
+        answers.append(
+            InlineQueryResultArticle(
+                id=result_id,
+                title=article_title[:100],
+                description=description[:250],
+                input_message_content=InputTextMessageContent(message_text=content_text[:4000]),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
+                ),
+            )
+        )
+
+    await inline_query.answer(
+        answers,
+        is_personal=True,
+        cache_time=10,
+    )
+
+
 @router.message(F.text.in_({BTN_CANCEL, "Bekor qilish"}))
 async def cancel_any(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -2184,7 +3827,7 @@ async def cancel_any(message: Message, state: FSMContext) -> None:
 
 
 @router.message(StateFilter(None), F.text)
-async def handle_code_request(message: Message) -> None:
+async def handle_code_request(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
@@ -2204,9 +3847,13 @@ async def handle_code_request(message: Message) -> None:
         BTN_STATS.lower(),
         BTN_ADD_ADMIN.lower(),
         BTN_BROADCAST.lower(),
+        BTN_REQUESTS.lower(),
         BTN_BACK.lower(),
         BTN_CANCEL.lower(),
         BTN_SERIAL_DONE.lower(),
+        BTN_SEARCH_NAME.lower(),
+        BTN_FILTER.lower(),
+        BTN_FAVORITES.lower(),
         "admin panel",
         "majburiy obuna",
         "kino qo'shish",
@@ -2215,13 +3862,18 @@ async def handle_code_request(message: Message) -> None:
         "kontent tahrirlash",
         "random kod",
         "kino ro'yxati",
+        "kino va serial ro'yxati",
         "statistika",
         "admin qo'shish",
         "habar yuborish",
         "xabar yuborish",
+        "so'rovlar",
         "ortga",
         "serialni yakunlash",
         "bekor qilish",
+        "nom bo'yicha qidirish",
+        "filter",
+        "sevimlilarim",
     }
     if text.lower() in protected_words:
         return
@@ -2234,14 +3886,26 @@ async def handle_code_request(message: Message) -> None:
     code = normalize_code(text)
     movie = db.get_movie(code)
     if movie:
-        caption = build_movie_caption(movie["title"], movie["description"])
+        caption = append_meta_to_caption(
+            build_movie_caption(movie["title"], movie["description"]),
+            movie.get("year") if isinstance(movie.get("year"), int) else None,
+            str(movie.get("quality") or ""),
+            [str(g) for g in movie.get("genres", []) if str(g).strip()],
+        )
         try:
+            is_favorite = db.is_favorite(message.from_user.id, "movie", movie["id"])
             await send_stored_media(
                 message,
                 media_type=movie["media_type"],
                 file_id=movie["file_id"],
                 caption=caption if caption else None,
+                reply_markup=build_movie_actions_kb(movie["id"], is_favorite=is_favorite),
             )
+            data = await state.get_data()
+            cleaned = dict(data)
+            cleaned.pop("pending_request_query", None)
+            cleaned.pop("pending_request_type", None)
+            await state.set_data(cleaned)
             db.log_request(message.from_user.id, code, "success")
         except (TelegramBadRequest, TelegramForbiddenError, ValueError):
             db.log_request(message.from_user.id, code, "send_error")
@@ -2253,7 +3917,15 @@ async def handle_code_request(message: Message) -> None:
     serial = db.get_serial_by_code(code)
     if not serial:
         db.log_request(message.from_user.id, code, "not_found")
-        await message.answer("❌ Bunday kod topilmadi. Kodni tekshirib qayta yuboring.")
+        await state.update_data(
+            pending_request_query=code,
+            pending_request_type="code",
+        )
+        await message.answer(
+            "❌ Bunday kod topilmadi.\n"
+            "Xohlasangiz so'rov qoldiring, kontent qo'shilsa bot sizga yuboradi.",
+            reply_markup=build_not_found_request_kb(),
+        )
         return
 
     episodes = db.list_serial_episodes(serial["id"])
@@ -2267,11 +3939,23 @@ async def handle_code_request(message: Message) -> None:
         serial["title"],
         serial["description"],
         episodes_count=len(episode_numbers),
+        year=serial.get("year") if isinstance(serial.get("year"), int) else None,
+        quality=str(serial.get("quality") or ""),
+        genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
     await message.answer(
         f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
-        reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers),
+        reply_markup=build_serial_episodes_kb(
+            serial["id"],
+            episode_numbers,
+            is_favorite=db.is_favorite(message.from_user.id, "serial", serial["id"]),
+        ),
     )
+    data = await state.get_data()
+    cleaned = dict(data)
+    cleaned.pop("pending_request_query", None)
+    cleaned.pop("pending_request_type", None)
+    await state.set_data(cleaned)
     db.log_request(message.from_user.id, code, "success")
 
 

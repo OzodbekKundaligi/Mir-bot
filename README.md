@@ -8,6 +8,10 @@ Bu bot kino yoki serial kod orqali media beradigan Telegram bot.
 - Admin qo'ygan kanallarga **majburiy obuna** tekshiradi.
 - Obuna tasdiqlansa foydalanuvchi kodni chatga yozadi.
 - Kod topilsa kino yoki serial qismlari yuboriladi.
+- Topilmagan kod/nom uchun user **so'rov qoldira oladi**.
+- Admin kontent qo'shganda so'rov qoldirgan userlarga **avto xabar yuboradi**.
+- **Nom bo'yicha qidiruv**, **janr/yil/sifat filter**, **sevimlilar** qo'shilgan.
+- **Inline mode**: `@botusername qidiruv`.
 - Admin boshqaruvi `/admin` orqali emas, **`Admin panel`** tugmasi orqali.
 - Bir nechta admin (`ADMIN_IDS`) qo'llab-quvvatlanadi.
 
@@ -17,7 +21,7 @@ Bu bot kino yoki serial kod orqali media beradigan Telegram bot.
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env
+New-Item .env -ItemType File
 ```
 
 `.env` ichida:

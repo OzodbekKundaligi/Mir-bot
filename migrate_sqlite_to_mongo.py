@@ -1,10 +1,16 @@
 import argparse
 import os
+import re
 import sqlite3
 from typing import Any
 
 from dotenv import load_dotenv
 from pymongo import ASCENDING, DESCENDING, MongoClient, ReturnDocument
+
+
+def normalize_lookup(value: str) -> str:
+    cleaned = re.sub(r"[^\w\s]+", " ", value.lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def ensure_indexes(db: Any) -> None:
@@ -14,13 +20,28 @@ def ensure_indexes(db: Any) -> None:
     db.required_channels.create_index([("is_active", ASCENDING), ("created_at", DESCENDING)])
     db.movies.create_index("code", unique=True)
     db.movies.create_index([("created_at", DESCENDING)])
+    db.movies.create_index([("year", DESCENDING), ("quality_norm", ASCENDING)])
+    db.movies.create_index("genres")
     db.serials.create_index("code", unique=True)
     db.serials.create_index([("created_at", DESCENDING)])
+    db.serials.create_index([("year", DESCENDING), ("quality_norm", ASCENDING)])
+    db.serials.create_index("genres")
     db.serial_episodes.create_index(
         [("serial_id", ASCENDING), ("episode_number", ASCENDING)],
         unique=True,
     )
     db.requests_log.create_index([("created_at", DESCENDING)])
+    db.content_requests.create_index(
+        [("user_tg_id", ASCENDING), ("request_type", ASCENDING), ("normalized_query", ASCENDING)],
+        unique=True,
+    )
+    db.content_requests.create_index([("status", ASCENDING), ("updated_at", DESCENDING)])
+    db.favorites.create_index(
+        [("user_tg_id", ASCENDING), ("content_type", ASCENDING), ("content_ref", ASCENDING)],
+        unique=True,
+    )
+    db.favorites.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
+    db.notification_log.create_index([("created_at", DESCENDING)])
 
 
 def has_table(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -66,6 +87,9 @@ def main() -> None:
         "serials",
         "serial_episodes",
         "requests_log",
+        "content_requests",
+        "favorites",
+        "notification_log",
     ]
     if args.drop_existing:
         for name in collections:
@@ -123,15 +147,21 @@ def main() -> None:
             "SELECT code, title, description, media_type, file_id, created_at FROM movies"
         ).fetchall()
         for row in rows:
+            title = str(row["title"] or "")
             db.movies.update_one(
                 {"code": row["code"]},
                 {
                     "$set": {
                         "code": row["code"],
-                        "title": row["title"],
+                        "title": title,
                         "description": row["description"] or "",
                         "media_type": row["media_type"],
                         "file_id": row["file_id"],
+                        "year": None,
+                        "quality": "",
+                        "quality_norm": "",
+                        "genres": [],
+                        "title_norm": normalize_lookup(title),
                         "created_at": row["created_at"],
                     }
                 },
@@ -145,13 +175,19 @@ def main() -> None:
             "SELECT id, code, title, description, created_at FROM serials"
         ).fetchall()
         for row in rows:
+            title = str(row["title"] or "")
             serial_doc = db.serials.find_one_and_update(
                 {"code": row["code"]},
                 {
                     "$set": {
                         "code": row["code"],
-                        "title": row["title"],
+                        "title": title,
                         "description": row["description"] or "",
+                        "year": None,
+                        "quality": "",
+                        "quality_norm": "",
+                        "genres": [],
+                        "title_norm": normalize_lookup(title),
                         "created_at": row["created_at"],
                     }
                 },

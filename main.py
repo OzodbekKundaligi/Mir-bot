@@ -7,8 +7,9 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -24,8 +25,8 @@ from aiogram.types import (
     InlineQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQueryResultArticle,
-    InputTextMessageContent,
+    InlineQueryResultCachedPhoto,
+    InlineQueryResultPhoto,
     KeyboardButton,
     MessageOriginChannel,
     Message,
@@ -114,6 +115,12 @@ class Database:
             return True
         haystack = cls._normalize_lookup(f"{title} {description}")
         return query_norm in haystack
+
+    @staticmethod
+    def _similarity(a: str, b: str) -> float:
+        if not a or not b:
+            return 0.0
+        return SequenceMatcher(None, a, b).ratio()
 
     def init_indexes(self) -> None:
         self.admins.create_index("tg_id", unique=True)
@@ -505,6 +512,8 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "media_type": 1,
+                "file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -518,6 +527,8 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "media_type": 1,
+                "file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -531,14 +542,32 @@ class Database:
             desc_norm = self._normalize_lookup(item_description)
             code_norm = self._normalize_lookup(item_code)
             if query_norm == code_norm:
-                return 8
+                return 16
+            if code_norm.startswith(query_norm):
+                return 14
+            if query_norm in code_norm:
+                return 12
             if query_norm == title_norm:
-                return 7
+                return 11
             if title_norm.startswith(query_norm):
-                return 6
+                return 10
             if query_norm in title_norm:
-                return 5
+                return 9
             if query_norm in desc_norm:
+                return 6
+
+            # Typo-tolerant scoring for near matches.
+            title_ratio = self._similarity(query_norm, title_norm)
+            code_ratio = self._similarity(query_norm, code_norm)
+            token_ratios = [self._similarity(query_norm, token) for token in title_norm.split() if token]
+            best_ratio = max([title_ratio, code_ratio, *token_ratios], default=0.0)
+            if best_ratio >= 0.90:
+                return 8
+            if best_ratio >= 0.78:
+                return 7
+            if best_ratio >= 0.65:
+                return 5
+            if best_ratio >= 0.52:
                 return 3
             return 0
 
@@ -1241,6 +1270,31 @@ def append_meta_to_caption(
     if base:
         return f"{base}\n\n{meta}"
     return meta
+
+
+def build_inline_poster_url(
+    title: str,
+    content_type: str,
+    year: int | None = None,
+    quality: str | None = None,
+) -> str:
+    clean_title = (title or "Movie").strip()
+    if len(clean_title) > 36:
+        clean_title = f"{clean_title[:33]}..."
+    head = "KINO" if content_type == "movie" else "SERIAL"
+    meta_parts: list[str] = []
+    if year:
+        meta_parts.append(str(year))
+    if quality:
+        meta_parts.append(str(quality))
+    meta_line = " | ".join(meta_parts)
+    text = f"{head}\n{clean_title}"
+    if meta_line:
+        text = f"{text}\n{meta_line}"
+    encoded_text = quote(text[:90], safe="")
+    bg_color = "1f2937" if content_type == "movie" else "0f172a"
+    fg_color = "f8fafc"
+    return f"https://dummyimage.com/600x900/{bg_color}/{fg_color}.png&text={encoded_text}"
 
 
 def build_not_found_request_kb() -> InlineKeyboardMarkup:
@@ -3740,12 +3794,12 @@ async def inline_search(inline_query: InlineQuery) -> None:
         return
 
     query = (inline_query.query or "").strip()
-    if len(query) < 2:
+    if len(query) < 2 and not query.isdigit():
         await inline_query.answer(
             [],
             is_personal=True,
             cache_time=1,
-            switch_pm_text="Botda qidirishni ochish",
+            switch_pm_text="Kamida 2 harf yoki kod kiriting",
             switch_pm_parameter="inline",
         )
         return
@@ -3766,23 +3820,29 @@ async def inline_search(inline_query: InlineQuery) -> None:
         await inline_query.answer([], is_personal=True, cache_time=1)
         return
 
-    items = db.search_content(query=query, limit=20)
+    items = db.search_content(query=query, limit=30)
     if not items:
         await inline_query.answer(
             [],
             is_personal=True,
             cache_time=3,
-            switch_pm_text="Natija topilmadi. Botda so'rov qoldiring",
+            switch_pm_text="Natija topilmadi. Boshqa yozuv bilan urinib ko'ring",
             switch_pm_parameter="search",
         )
         return
 
-    answers: list[InlineQueryResultArticle] = []
+    answers: list[Any] = []
+    seen_result_keys: set[str] = set()
     for item in items:
         content_type = str(item.get("content_type") or "")
         content_id = str(item.get("id") or "")
         if content_type not in {"movie", "serial"} or not content_id:
             continue
+        result_key = f"{content_type}:{content_id}"
+        if result_key in seen_result_keys:
+            continue
+        seen_result_keys.add(result_key)
+
         payload = f"m_{content_id}" if content_type == "movie" else f"s_{content_id}"
         deeplink = build_start_deeplink(username, payload)
         title = str(item.get("title") or "Noma'lum")
@@ -3794,26 +3854,69 @@ async def inline_search(inline_query: InlineQuery) -> None:
         article_title = f"{'🎬' if content_type == 'movie' else '📺'} {title}"
         if code:
             article_title = f"{article_title} [{code}]"
-        description = meta or "Botda ochish uchun bosing"
-        content_text = f"{title}\nKod: {code or '-'}\n\nBotda ochish: {deeplink}"
+        description = f"Kod: {code or '-'}"
+        if meta:
+            description = f"{description} | {meta}"
+
+        content_text = f"{title}\nKod: {code or '-'}"
+        if meta:
+            content_text = f"{content_text}\n{meta}"
+        content_text = f"{content_text}\n\nBotda ochish: {deeplink}"
 
         result_id = hashlib.sha1(f"{content_type}:{content_id}:{query}".encode("utf-8")).hexdigest()[:32]
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
+        )
+        media_type = str(item.get("media_type") or "")
+        file_id = str(item.get("file_id") or "")
+
+        if content_type == "movie" and media_type == "photo" and file_id:
+            answers.append(
+                InlineQueryResultCachedPhoto(
+                    id=result_id,
+                    photo_file_id=file_id,
+                    title=article_title[:100],
+                    description=description[:250],
+                    caption=content_text[:1024],
+                    reply_markup=reply_markup,
+                )
+            )
+            continue
+
+        poster_url = build_inline_poster_url(
+            title=title,
+            content_type=content_type,
+            year=year if isinstance(year, int) else None,
+            quality=quality,
+        )
         answers.append(
-            InlineQueryResultArticle(
+            InlineQueryResultPhoto(
                 id=result_id,
+                photo_url=poster_url,
+                thumbnail_url=poster_url,
+                photo_width=600,
+                photo_height=900,
                 title=article_title[:100],
                 description=description[:250],
-                input_message_content=InputTextMessageContent(message_text=content_text[:4000]),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
-                ),
+                caption=content_text[:1024],
+                reply_markup=reply_markup,
             )
         )
+
+    if not answers:
+        await inline_query.answer(
+            [],
+            is_personal=True,
+            cache_time=2,
+            switch_pm_text="Natija topilmadi. Botda qidirib ko'ring",
+            switch_pm_parameter="start",
+        )
+        return
 
     await inline_query.answer(
         answers,
         is_personal=True,
-        cache_time=10,
+        cache_time=5,
     )
 
 

@@ -164,6 +164,8 @@ def main() -> None:
                         "title_norm": normalize_lookup(title),
                         "preview_media_type": "",
                         "preview_file_id": "",
+                        "preview_photo_file_id": "",
+                        "downloads": 0,
                         "created_at": row["created_at"],
                     }
                 },
@@ -190,6 +192,10 @@ def main() -> None:
                         "quality_norm": "",
                         "genres": [],
                         "title_norm": normalize_lookup(title),
+                        "preview_media_type": "",
+                        "preview_file_id": "",
+                        "preview_photo_file_id": "",
+                        "downloads": 0,
                         "created_at": row["created_at"],
                     }
                 },

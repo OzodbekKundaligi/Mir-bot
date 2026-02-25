@@ -12,7 +12,7 @@ Bu bot kino yoki serial kod orqali media beradigan Telegram bot.
 - Admin kontent qo'shganda so'rov qoldirgan userlarga **avto xabar yuboradi**.
 - **Nom bo'yicha qidiruv**, **janr/yil/sifat filter**, **sevimlilar** qo'shilgan.
 - **Inline mode**: `@botusername qidiruv`.
-- Inline'da kod bo'yicha qidiruv, typo-ga yaqin natijalar va rasmli preview chiqadi.
+- Inline'da kod bo'yicha qidiruv, typo-ga yaqin natijalar, yuklashlar soni va kontentning o'zidan olingan preview chiqadi.
 - Kino ostida `Qisqa video kerakmi?` tugmasi bor (1-3 ta highlight short).
 - Admin boshqaruvi `/admin` orqali emas, **`Admin panel`** tugmasi orqali.
 - Bir nechta admin (`ADMIN_IDS`) qo'llab-quvvatlanadi.

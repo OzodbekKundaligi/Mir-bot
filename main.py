@@ -268,6 +268,7 @@ class Database:
             "genres": genres,
             "preview_media_type": movie.preview_media_type.strip(),
             "preview_file_id": movie.preview_file_id.strip(),
+            "downloads": 0,
             "title_norm": self._normalize_lookup(movie.title),
             "created_at": now,
         }
@@ -295,6 +296,7 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "downloads": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -316,6 +318,7 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "downloads": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -374,6 +377,34 @@ class Database:
             cursor = cursor.limit(limit)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
 
+    def increment_movie_downloads(self, movie_id: str, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        movie_object_id = self._to_object_id(movie_id)
+        if not movie_object_id:
+            return
+        self.movies.update_one(
+            {"_id": movie_object_id},
+            {
+                "$inc": {"downloads": amount},
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
+    def increment_serial_downloads(self, serial_id: str, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        serial_object_id = self._to_object_id(serial_id)
+        if not serial_object_id:
+            return
+        self.serials.update_one(
+            {"_id": serial_object_id},
+            {
+                "$inc": {"downloads": amount},
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
     def add_serial(
         self,
         code: str,
@@ -398,6 +429,7 @@ class Database:
             "preview_media_type": "",
             "preview_file_id": "",
             "preview_photo_file_id": "",
+            "downloads": 0,
             "created_at": now,
         }
         try:
@@ -451,6 +483,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
+                "downloads": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -468,6 +501,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
+                "downloads": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -518,6 +552,25 @@ class Database:
             {"media_type": 1, "file_id": 1},
         )
         return self._doc_without_object_id(doc)
+
+    def get_serial_inline_media_preview(self, serial_id: str) -> tuple[str, str] | None:
+        # Fallback for inline cards: use first episode media when explicit serial preview is missing.
+        doc = self.serial_episodes.find_one(
+            {"serial_id": serial_id},
+            {"media_type": 1, "file_id": 1},
+            sort=[("episode_number", ASCENDING)],
+        )
+        if not doc:
+            return None
+        media_type = str(doc.get("media_type") or "")
+        file_id = str(doc.get("file_id") or "")
+        if not file_id:
+            return None
+        if media_type == "photo":
+            return "photo", file_id
+        if media_type == "video":
+            return "video", file_id
+        return None
 
     def code_exists(self, code: str) -> bool:
         if self.movies.find_one({"code": code}, {"_id": 1}):
@@ -580,6 +633,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
+                "downloads": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -598,6 +652,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
+                "downloads": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -2143,6 +2198,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
             allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
         ),
     )
+    db.increment_movie_downloads(movie["id"])
     return True
 
 
@@ -2696,6 +2752,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
             caption=caption if caption else None,
             reply_markup=nav_kb,
         )
+        db.increment_serial_downloads(serial_id)
         await callback.answer()
     except (TelegramBadRequest, TelegramForbiddenError, ValueError):
         await callback.answer("Xatolik", show_alert=True)
@@ -4301,13 +4358,12 @@ async def inline_search(inline_query: InlineQuery) -> None:
         year = item.get("year")
         quality = str(item.get("quality") or "")
         meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
+        downloads = int(item.get("downloads") or 0)
 
-        article_title = f"{'🎬' if content_type == 'movie' else '📺'} {title}"
-        if code:
-            article_title = f"{article_title} [{code}]"
-        description = f"Kod: {code or '-'}"
-        if meta:
-            description = f"{description} | {meta}"
+        article_title = title
+        if isinstance(year, int):
+            article_title = f"{article_title} ({year})"
+        description = f"Yuklashlar: {downloads}"
 
         content_text = f"{title}\nKod: {code or '-'}"
         if meta:
@@ -4319,6 +4375,8 @@ async def inline_search(inline_query: InlineQuery) -> None:
             inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
         )
         preview = resolve_inline_media_preview(item)
+        if not preview and content_type == "serial":
+            preview = db.get_serial_inline_media_preview(content_id)
         if preview and preview[0] == "photo":
             answers.append(
                 InlineQueryResultCachedPhoto(
@@ -4442,25 +4500,12 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
     code = normalize_code(text)
     movie = db.get_movie(code)
     if movie:
-        caption = append_meta_to_caption(
-            build_movie_caption(movie["title"], movie["description"]),
-            movie.get("year") if isinstance(movie.get("year"), int) else None,
-            str(movie.get("quality") or ""),
-            [str(g) for g in movie.get("genres", []) if str(g).strip()],
-        )
         try:
-            is_favorite = db.is_favorite(message.from_user.id, "movie", movie["id"])
-            await send_stored_media(
-                message,
-                media_type=movie["media_type"],
-                file_id=movie["file_id"],
-                caption=caption if caption else None,
-                reply_markup=build_movie_actions_kb(
-                    movie["id"],
-                    is_favorite=is_favorite,
-                    allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
-                ),
-            )
+            sent = await send_movie_by_id(message, str(movie["id"]), message.from_user.id)
+            if not sent:
+                db.log_request(message.from_user.id, code, "not_found")
+                await message.answer("❌ Kino topilmadi.")
+                return
             data = await state.get_data()
             cleaned = dict(data)
             cleaned.pop("pending_request_query", None)

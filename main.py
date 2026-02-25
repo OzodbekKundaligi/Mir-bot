@@ -5,6 +5,8 @@ import logging
 import os
 import random
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -27,6 +29,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQueryResultCachedPhoto,
     InlineQueryResultPhoto,
+    FSInputFile,
     KeyboardButton,
     MessageOriginChannel,
     Message,
@@ -378,6 +381,8 @@ class Database:
             "quality_norm": self._normalize_quality(cleaned_quality),
             "genres": cleaned_genres,
             "title_norm": self._normalize_lookup(title),
+            "preview_media_type": "",
+            "preview_file_id": "",
             "created_at": now,
         }
         try:
@@ -421,16 +426,50 @@ class Database:
             return None
         doc = self.serials.find_one(
             {"_id": serial_object_id},
-            {"code": 1, "title": 1, "description": 1, "year": 1, "quality": 1, "genres": 1},
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
+            },
         )
         return self._doc_without_object_id(doc)
 
     def get_serial_by_code(self, code: str) -> dict[str, Any] | None:
         doc = self.serials.find_one(
             {"code": code},
-            {"code": 1, "title": 1, "description": 1, "year": 1, "quality": 1, "genres": 1},
+            {
+                "code": 1,
+                "title": 1,
+                "description": 1,
+                "year": 1,
+                "quality": 1,
+                "genres": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
+            },
         )
         return self._doc_without_object_id(doc)
+
+    def update_serial_preview(self, serial_id: str, media_type: str, file_id: str) -> bool:
+        serial_object_id = self._to_object_id(serial_id)
+        if not serial_object_id:
+            return False
+        result = self.serials.update_one(
+            {"_id": serial_object_id},
+            {
+                "$set": {
+                    "preview_media_type": media_type.strip(),
+                    "preview_file_id": file_id.strip(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return result.matched_count > 0
 
     def list_serial_episodes(self, serial_id: str) -> list[dict[str, Any]]:
         cursor = self.serial_episodes.find(
@@ -514,6 +553,8 @@ class Database:
                 "genres": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -529,6 +570,8 @@ class Database:
                 "genres": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -1304,12 +1347,28 @@ def build_not_found_request_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_movie_actions_kb(movie_id: str, is_favorite: bool) -> InlineKeyboardMarkup:
+def build_movie_actions_kb(
+    movie_id: str,
+    is_favorite: bool,
+    *,
+    allow_shorts: bool = True,
+) -> InlineKeyboardMarkup:
     fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
     fav_action = "del" if is_favorite else "add"
     builder = InlineKeyboardBuilder()
     builder.button(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")
+    if allow_shorts:
+        builder.button(text="🎞 Qisqa video kerakmi?", callback_data=f"short:ask:movie:{movie_id}")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_shorts_count_kb(movie_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="1 ta", callback_data=f"short:gen:movie:{movie_id}:1")
+    builder.button(text="2 ta", callback_data=f"short:gen:movie:{movie_id}:2")
+    builder.button(text="3 ta", callback_data=f"short:gen:movie:{movie_id}:3")
+    builder.adjust(3)
     return builder.as_markup()
 
 
@@ -1800,6 +1859,213 @@ async def send_media_to_chat(
     await bot.send_message(chat_id=chat_id, text=f"{final_caption}\n\nID: {file_id}", reply_markup=reply_markup)
 
 
+FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
+FFPROBE_BIN = shutil.which("ffprobe") or "ffprobe"
+SHORTS_MAX_COUNT = 3
+SHORTS_CLIP_SECONDS = 18.0
+SHORTS_MAX_INPUT_SECONDS = 4 * 60 * 60
+SHORTS_MIN_GAP_SECONDS = 22.0
+SHORTS_SEMAPHORE = asyncio.Semaphore(2)
+
+
+def movie_supports_shorts(media_type: str) -> bool:
+    return media_type in {"video", "document"}
+
+
+async def run_subprocess(cmd: list[str], timeout: float = 240.0) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except TimeoutError:
+        process.kill()
+        await process.communicate()
+        return 124, "", "timeout"
+    stdout = stdout_bytes.decode("utf-8", errors="ignore")
+    stderr = stderr_bytes.decode("utf-8", errors="ignore")
+    return process.returncode, stdout, stderr
+
+
+async def get_video_duration_seconds(path: str) -> float | None:
+    cmd = [
+        FFPROBE_BIN,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
+    ]
+    code, stdout, _ = await run_subprocess(cmd, timeout=40.0)
+    if code != 0:
+        return None
+    try:
+        value = float(stdout.strip())
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+async def detect_scene_times(path: str, limit: int = 40) -> list[float]:
+    # Scene-change timestamps from ffmpeg `showinfo`; used as highlight candidates.
+    cmd = [
+        FFMPEG_BIN,
+        "-hide_banner",
+        "-v",
+        "info",
+        "-i",
+        path,
+        "-vf",
+        "select='gt(scene,0.40)',showinfo",
+        "-an",
+        "-f",
+        "null",
+        os.devnull,
+    ]
+    code, _, stderr = await run_subprocess(cmd, timeout=180.0)
+    if code not in {0, 255}:
+        return []
+    raw_times: list[float] = []
+    for match in re.findall(r"pts_time:([0-9]+(?:\.[0-9]+)?)", stderr):
+        try:
+            raw_times.append(float(match))
+        except ValueError:
+            continue
+    unique_sorted = sorted({round(t, 2) for t in raw_times if t >= 0.0})
+    return unique_sorted[: max(1, limit)]
+
+
+def pick_highlight_starts(
+    duration: float,
+    scene_times: list[float],
+    count: int,
+    clip_length: float,
+) -> list[float]:
+    if duration <= 0:
+        return []
+    usable_end = max(0.0, duration - clip_length - 0.5)
+
+    candidates: list[float] = []
+    for scene_time in scene_times:
+        start = min(max(0.0, scene_time - (clip_length * 0.35)), usable_end)
+        candidates.append(round(start, 2))
+
+    for ratio in (0.12, 0.26, 0.40, 0.54, 0.68, 0.82):
+        start = round(min(max(0.0, duration * ratio), usable_end), 2)
+        candidates.append(start)
+
+    selected: list[float] = []
+    for candidate in candidates:
+        if all(abs(candidate - prev) >= max(SHORTS_MIN_GAP_SECONDS, clip_length * 1.2) for prev in selected):
+            selected.append(candidate)
+        if len(selected) >= count:
+            break
+
+    while len(selected) < count:
+        step = duration / float(count + 1)
+        probe = round(min(max(0.0, step * (len(selected) + 1)), usable_end), 2)
+        if all(abs(probe - prev) >= max(8.0, clip_length * 0.5) for prev in selected):
+            selected.append(probe)
+        else:
+            probe = round(min(max(0.0, probe + 5.0), usable_end), 2)
+            if probe not in selected:
+                selected.append(probe)
+        if len(selected) > 20:
+            break
+
+    selected = sorted(selected)[:count]
+    return selected
+
+
+async def render_short_clip(input_path: str, output_path: str, start_sec: float, clip_sec: float) -> bool:
+    vf = "scale='if(gt(iw,1280),1280,iw)':-2"
+    cmd = [
+        FFMPEG_BIN,
+        "-y",
+        "-ss",
+        f"{start_sec:.2f}",
+        "-i",
+        input_path,
+        "-t",
+        f"{clip_sec:.2f}",
+        "-vf",
+        vf,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+    code, _, _ = await run_subprocess(cmd, timeout=240.0)
+    return code == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
+
+
+async def generate_movie_shorts(
+    bot: Bot,
+    source_file_id: str,
+    count: int,
+) -> tuple[list[str], str | None]:
+    if count < 1 or count > SHORTS_MAX_COUNT:
+        return [], "Noto'g'ri son tanlandi."
+    if shutil.which(FFMPEG_BIN) is None or shutil.which(FFPROBE_BIN) is None:
+        return [], "Serverda ffmpeg/ffprobe topilmadi."
+
+    tmp_dir = tempfile.mkdtemp(prefix="kino_shorts_")
+    input_path = os.path.join(tmp_dir, "source.mp4")
+    try:
+        await bot.download(source_file_id, destination=input_path)
+        if not os.path.exists(input_path) or os.path.getsize(input_path) <= 0:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Kino faylini yuklab bo'lmadi."
+
+        duration = await get_video_duration_seconds(input_path)
+        if duration is None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Video davomiyligini aniqlab bo'lmadi."
+        if duration < 20:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Video juda qisqa."
+        if duration > SHORTS_MAX_INPUT_SECONDS:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Video juda uzun, qisqa klip tayyorlab bo'lmadi."
+
+        clip_length = min(SHORTS_CLIP_SECONDS, max(8.0, duration * 0.12))
+        scene_times = await detect_scene_times(input_path, limit=60)
+        starts = pick_highlight_starts(duration, scene_times, count, clip_length)
+        if not starts:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Qiziqarli segmentlar topilmadi."
+
+        outputs: list[str] = []
+        for idx, start in enumerate(starts, start=1):
+            output_path = os.path.join(tmp_dir, f"short_{idx}.mp4")
+            ok = await render_short_clip(input_path, output_path, start, clip_length)
+            if ok:
+                outputs.append(output_path)
+
+        if not outputs:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], "Qisqa videolarni tayyorlab bo'lmadi."
+        return outputs, None
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return [], f"Xatolik: {exc}"
+
+
 BOT_USERNAME_CACHE: str | None = None
 
 
@@ -1832,7 +2098,11 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         media_type=movie["media_type"],
         file_id=movie["file_id"],
         caption=caption if caption else None,
-        reply_markup=build_movie_actions_kb(movie["id"], is_favorite=is_favorite),
+        reply_markup=build_movie_actions_kb(
+            movie["id"],
+            is_favorite=is_favorite,
+            allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
+        ),
     )
     return True
 
@@ -1883,7 +2153,11 @@ async def notify_requesters_for_content(
                     media_type=str(movie.get("media_type") or ""),
                     file_id=str(movie.get("file_id") or ""),
                     caption=caption if caption else None,
-                    reply_markup=build_movie_actions_kb(str(movie.get("id") or ""), is_favorite=False),
+                    reply_markup=build_movie_actions_kb(
+                        str(movie.get("id") or ""),
+                        is_favorite=False,
+                        allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
+                    ),
                 )
             elif content_type == "serial" and serial_id and username:
                 deeplink = build_start_deeplink(username, f"s_{serial_id}")
@@ -2842,6 +3116,8 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         return
 
     if text == "-":
+        if preview_media_type and preview_file_id:
+            db.update_serial_preview(serial_id, preview_media_type, preview_file_id)
         notify_text = ""
         serial = db.get_serial(serial_id) if serial_id else None
         if serial:
@@ -2908,6 +3184,7 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
             caption=caption,
             reply_markup=keyboard,
         )
+        db.update_serial_preview(serial_id, preview_media_type, preview_file_id)
         notify_text = ""
         delivered, failed = await notify_requesters_for_content(
             bot=message.bot,
@@ -3725,9 +4002,14 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
 
     try:
         if content_type == "movie":
+            movie = db.get_movie_by_id(content_ref)
             is_favorite = db.is_favorite(callback.from_user.id, "movie", content_ref)
             await callback.message.edit_reply_markup(
-                reply_markup=build_movie_actions_kb(content_ref, is_favorite),
+                reply_markup=build_movie_actions_kb(
+                    content_ref,
+                    is_favorite,
+                    allow_shorts=movie_supports_shorts(str((movie or {}).get("media_type") or "")),
+                ),
             )
         else:
             serial = db.get_serial(content_ref)
@@ -3744,6 +4026,102 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
                 )
     except TelegramBadRequest:
         pass
+
+
+@router.callback_query(F.data.startswith("short:ask:movie:"))
+async def ask_movie_shorts(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    movie_id = callback.data.split(":", 3)[-1].strip()
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    if not movie_supports_shorts(str(movie.get("media_type") or "")):
+        await callback.answer("Bu turdagi kontentdan qisqa video qilib bo'lmaydi", show_alert=True)
+        return
+
+    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
+    if not ok:
+        await callback.message.answer(
+            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
+            reply_markup=build_subscribe_keyboard(channels),
+        )
+        await callback.answer("Obuna kerak")
+        return
+
+    title = str(movie.get("title") or "Kino")
+    await callback.message.answer(
+        f"🎞 {title}\nQancha qisqa video tayyorlaymiz? (max: {SHORTS_MAX_COUNT})",
+        reply_markup=build_shorts_count_kb(movie_id),
+    )
+    await callback.answer("Tanlang")
+
+
+@router.callback_query(F.data.startswith("short:gen:movie:"))
+async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 4)
+    if len(parts) != 5 or not parts[4].isdigit():
+        await callback.answer("Noto'g'ri so'rov", show_alert=True)
+        return
+    movie_id = parts[3].strip()
+    count = int(parts[4])
+    if count < 1 or count > SHORTS_MAX_COUNT:
+        await callback.answer("1-3 oralig'ida tanlang", show_alert=True)
+        return
+
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    media_type = str(movie.get("media_type") or "")
+    file_id = str(movie.get("file_id") or "")
+    if not movie_supports_shorts(media_type) or not file_id:
+        await callback.answer("Bu kinodan qisqa video qilib bo'lmaydi", show_alert=True)
+        return
+
+    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
+    if not ok:
+        await callback.message.answer(
+            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
+            reply_markup=build_subscribe_keyboard(channels),
+        )
+        await callback.answer("Obuna kerak")
+        return
+
+    await callback.answer("Tayyorlanmoqda...")
+    await callback.message.answer(
+        f"⏳ {count} ta qisqa video tayyorlanmoqda. Iltimos kuting..."
+    )
+
+    output_paths: list[str] = []
+    async with SHORTS_SEMAPHORE:
+        output_paths, error = await generate_movie_shorts(
+            bot=callback.bot,
+            source_file_id=file_id,
+            count=count,
+        )
+    if error:
+        await callback.message.answer(f"❌ {error}")
+        return
+
+    title = str(movie.get("title") or "Kino")
+    try:
+        for idx, video_path in enumerate(output_paths, start=1):
+            await callback.message.answer_video(
+                video=FSInputFile(video_path),
+                caption=f"🎬 {title}\nQisqa video {idx}/{len(output_paths)}",
+            )
+    finally:
+        if output_paths:
+            try:
+                shutil.rmtree(os.path.dirname(output_paths[0]), ignore_errors=True)
+            except OSError:
+                pass
 
 
 @router.callback_query(F.data.startswith("open:"))
@@ -3869,12 +4247,20 @@ async def inline_search(inline_query: InlineQuery) -> None:
         )
         media_type = str(item.get("media_type") or "")
         file_id = str(item.get("file_id") or "")
+        preview_media_type = str(item.get("preview_media_type") or "")
+        preview_file_id = str(item.get("preview_file_id") or "")
 
+        cached_photo_file_id = ""
         if content_type == "movie" and media_type == "photo" and file_id:
+            cached_photo_file_id = file_id
+        elif content_type == "serial" and preview_media_type == "photo" and preview_file_id:
+            cached_photo_file_id = preview_file_id
+
+        if cached_photo_file_id:
             answers.append(
                 InlineQueryResultCachedPhoto(
                     id=result_id,
-                    photo_file_id=file_id,
+                    photo_file_id=cached_photo_file_id,
                     title=article_title[:100],
                     description=description[:250],
                     caption=content_text[:1024],
@@ -4002,7 +4388,11 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
                 media_type=movie["media_type"],
                 file_id=movie["file_id"],
                 caption=caption if caption else None,
-                reply_markup=build_movie_actions_kb(movie["id"], is_favorite=is_favorite),
+                reply_markup=build_movie_actions_kb(
+                    movie["id"],
+                    is_favorite=is_favorite,
+                    allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
+                ),
             )
             data = await state.get_data()
             cleaned = dict(data)

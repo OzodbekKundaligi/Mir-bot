@@ -162,6 +162,8 @@ def main() -> None:
                         "quality_norm": "",
                         "genres": [],
                         "title_norm": normalize_lookup(title),
+                        "preview_media_type": "",
+                        "preview_file_id": "",
                         "created_at": row["created_at"],
                     }
                 },

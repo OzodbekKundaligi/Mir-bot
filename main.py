@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import Any, Iterable
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -24,12 +24,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     ChatJoinRequest,
     CallbackQuery,
+    FSInputFile,
     InlineQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultArticle,
     InlineQueryResultCachedPhoto,
-    InlineQueryResultPhoto,
-    FSInputFile,
+    InlineQueryResultCachedVideo,
+    InputTextMessageContent,
     KeyboardButton,
     MessageOriginChannel,
     Message,
@@ -64,6 +66,8 @@ class Movie:
     year: int | None = None
     quality: str = ""
     genres: list[str] | None = None
+    preview_media_type: str = ""
+    preview_file_id: str = ""
 
 
 class Database:
@@ -262,6 +266,8 @@ class Database:
             "quality": movie.quality.strip(),
             "quality_norm": self._normalize_quality(movie.quality),
             "genres": genres,
+            "preview_media_type": movie.preview_media_type.strip(),
+            "preview_file_id": movie.preview_file_id.strip(),
             "title_norm": self._normalize_lookup(movie.title),
             "created_at": now,
         }
@@ -287,6 +293,8 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -306,6 +314,8 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "preview_media_type": 1,
+                "preview_file_id": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -320,6 +330,8 @@ class Database:
         year: int | None = None,
         quality: str = "",
         genres: list[str] | None = None,
+        preview_media_type: str = "",
+        preview_file_id: str = "",
     ) -> bool:
         cleaned_quality = quality.strip()
         cleaned_genres = sorted({g.strip().lower() for g in (genres or []) if g and g.strip()})
@@ -335,6 +347,8 @@ class Database:
                     "quality": cleaned_quality,
                     "quality_norm": self._normalize_quality(cleaned_quality),
                     "genres": cleaned_genres,
+                    "preview_media_type": preview_media_type.strip(),
+                    "preview_file_id": preview_file_id.strip(),
                     "title_norm": self._normalize_lookup(title),
                     "updated_at": utc_now_iso(),
                 }
@@ -383,6 +397,7 @@ class Database:
             "title_norm": self._normalize_lookup(title),
             "preview_media_type": "",
             "preview_file_id": "",
+            "preview_photo_file_id": "",
             "created_at": now,
         }
         try:
@@ -435,6 +450,7 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "preview_photo_file_id": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -451,11 +467,18 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "preview_photo_file_id": 1,
             },
         )
         return self._doc_without_object_id(doc)
 
-    def update_serial_preview(self, serial_id: str, media_type: str, file_id: str) -> bool:
+    def update_serial_preview(
+        self,
+        serial_id: str,
+        media_type: str,
+        file_id: str,
+        preview_photo_file_id: str = "",
+    ) -> bool:
         serial_object_id = self._to_object_id(serial_id)
         if not serial_object_id:
             return False
@@ -465,6 +488,7 @@ class Database:
                 "$set": {
                     "preview_media_type": media_type.strip(),
                     "preview_file_id": file_id.strip(),
+                    "preview_photo_file_id": preview_photo_file_id.strip(),
                     "updated_at": utc_now_iso(),
                 }
             },
@@ -555,6 +579,7 @@ class Database:
                 "file_id": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "preview_photo_file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -572,6 +597,7 @@ class Database:
                 "file_id": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "preview_photo_file_id": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -1315,29 +1341,30 @@ def append_meta_to_caption(
     return meta
 
 
-def build_inline_poster_url(
-    title: str,
-    content_type: str,
-    year: int | None = None,
-    quality: str | None = None,
-) -> str:
-    clean_title = (title or "Movie").strip()
-    if len(clean_title) > 36:
-        clean_title = f"{clean_title[:33]}..."
-    head = "KINO" if content_type == "movie" else "SERIAL"
-    meta_parts: list[str] = []
-    if year:
-        meta_parts.append(str(year))
-    if quality:
-        meta_parts.append(str(quality))
-    meta_line = " | ".join(meta_parts)
-    text = f"{head}\n{clean_title}"
-    if meta_line:
-        text = f"{text}\n{meta_line}"
-    encoded_text = quote(text[:90], safe="")
-    bg_color = "1f2937" if content_type == "movie" else "0f172a"
-    fg_color = "f8fafc"
-    return f"https://dummyimage.com/600x900/{bg_color}/{fg_color}.png&text={encoded_text}"
+def resolve_inline_media_preview(item: dict[str, Any]) -> tuple[str, str] | None:
+    content_type = str(item.get("content_type") or "")
+    media_type = str(item.get("media_type") or "")
+    file_id = str(item.get("file_id") or "")
+    preview_media_type = str(item.get("preview_media_type") or "")
+    preview_file_id = str(item.get("preview_file_id") or "")
+    preview_photo_file_id = str(item.get("preview_photo_file_id") or "")
+
+    # Prefer extracted image previews from the original media.
+    if preview_photo_file_id:
+        return "photo", preview_photo_file_id
+    if preview_media_type == "photo" and preview_file_id:
+        return "photo", preview_file_id
+
+    if content_type == "movie":
+        if media_type == "photo" and file_id:
+            return "photo", file_id
+        if media_type == "video" and file_id:
+            return "video", file_id
+    if content_type == "serial":
+        if preview_media_type == "video" and preview_file_id:
+            return "video", preview_file_id
+
+    return None
 
 
 def build_not_found_request_kb() -> InlineKeyboardMarkup:
@@ -1666,6 +1693,18 @@ def unpack_post_ref(value: str) -> tuple[str, int] | None:
     if not chat_ref or not msg.isdigit():
         return None
     return chat_ref, int(msg)
+
+
+def extract_preview_photo_file_id(message: Message) -> str | None:
+    if message.photo:
+        return message.photo[-1].file_id
+    if message.video and message.video.thumbnail:
+        return message.video.thumbnail.file_id
+    if message.document and message.document.thumbnail:
+        return message.document.thumbnail.file_id
+    if message.animation and message.animation.thumbnail:
+        return message.animation.thumbnail.file_id
+    return None
 
 
 def parse_message_media(message: Message) -> tuple[str, str] | None:
@@ -2791,6 +2830,9 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         await message.answer("Noto'g'ri format. Video/document/photo yoki matn yuboring.")
         return
     media_type, file_id = media
+    preview_photo_file_id = extract_preview_photo_file_id(message)
+    preview_media_type = "photo" if preview_photo_file_id else ""
+    preview_file_id = preview_photo_file_id or ""
 
     data = await state.get_data()
     movie = Movie(
@@ -2802,6 +2844,8 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         year=data.get("year"),
         quality=str(data.get("quality") or ""),
         genres=[str(g) for g in data.get("genres", []) if str(g).strip()],
+        preview_media_type=preview_media_type,
+        preview_file_id=preview_file_id,
     )
     created = db.add_movie(movie)
     await state.clear()
@@ -3075,8 +3119,13 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
         )
         return
     media_type, file_id = media
+    preview_photo_file_id = extract_preview_photo_file_id(message) or ""
 
-    await state.update_data(preview_media_type=media_type, preview_file_id=file_id)
+    await state.update_data(
+        preview_media_type=media_type,
+        preview_file_id=file_id,
+        preview_photo_file_id=preview_photo_file_id,
+    )
     await state.set_state(AddSerialState.waiting_publish_channel)
     await message.answer(
         "📣 Endi post joylanadigan kanalni yuboring.\n"
@@ -3109,6 +3158,7 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
     description = str(data.get("description") or "").strip()
     preview_media_type = str(data.get("preview_media_type") or "").strip()
     preview_file_id = str(data.get("preview_file_id") or "").strip()
+    preview_photo_file_id = str(data.get("preview_photo_file_id") or "").strip()
 
     if not serial_id:
         await state.clear()
@@ -3117,7 +3167,12 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
 
     if text == "-":
         if preview_media_type and preview_file_id:
-            db.update_serial_preview(serial_id, preview_media_type, preview_file_id)
+            db.update_serial_preview(
+                serial_id,
+                preview_media_type,
+                preview_file_id,
+                preview_photo_file_id=preview_photo_file_id,
+            )
         notify_text = ""
         serial = db.get_serial(serial_id) if serial_id else None
         if serial:
@@ -3184,7 +3239,12 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
             caption=caption,
             reply_markup=keyboard,
         )
-        db.update_serial_preview(serial_id, preview_media_type, preview_file_id)
+        db.update_serial_preview(
+            serial_id,
+            preview_media_type,
+            preview_file_id,
+            preview_photo_file_id=preview_photo_file_id,
+        )
         notify_text = ""
         delivered, failed = await notify_requesters_for_content(
             bot=message.bot,
@@ -3285,6 +3345,8 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
             movie_year=movie.get("year"),
             movie_quality=str(movie.get("quality") or ""),
             movie_genres=[str(g) for g in movie.get("genres", []) if str(g).strip()],
+            movie_preview_media_type=str(movie.get("preview_media_type") or ""),
+            movie_preview_file_id=str(movie.get("preview_file_id") or ""),
         )
         await state.set_state(EditContentState.waiting_movie_title)
         await message.answer(
@@ -3439,6 +3501,8 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     if text == "-":
         media_type = str(data.get("movie_media_type") or "")
         file_id = str(data.get("movie_file_id") or "")
+        preview_media_type = str(data.get("movie_preview_media_type") or "")
+        preview_file_id = str(data.get("movie_preview_file_id") or "")
     else:
         parsed_media = parse_message_media(message)
         if not parsed_media:
@@ -3448,6 +3512,13 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
             )
             return
         media_type, file_id = parsed_media
+        preview_photo_file_id = extract_preview_photo_file_id(message)
+        if preview_photo_file_id:
+            preview_media_type = "photo"
+            preview_file_id = preview_photo_file_id
+        else:
+            preview_media_type = str(data.get("movie_preview_media_type") or "")
+            preview_file_id = str(data.get("movie_preview_file_id") or "")
 
     title = str(data.get("movie_new_title") or data.get("movie_title") or "").strip()
     description = str(data.get("movie_new_description") or data.get("movie_description") or "").strip()
@@ -3469,6 +3540,8 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
         year=year,
         quality=quality,
         genres=genres,
+        preview_media_type=preview_media_type,
+        preview_file_id=preview_file_id,
     )
     await state.clear()
     if updated:
@@ -4245,22 +4318,12 @@ async def inline_search(inline_query: InlineQuery) -> None:
         reply_markup = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
         )
-        media_type = str(item.get("media_type") or "")
-        file_id = str(item.get("file_id") or "")
-        preview_media_type = str(item.get("preview_media_type") or "")
-        preview_file_id = str(item.get("preview_file_id") or "")
-
-        cached_photo_file_id = ""
-        if content_type == "movie" and media_type == "photo" and file_id:
-            cached_photo_file_id = file_id
-        elif content_type == "serial" and preview_media_type == "photo" and preview_file_id:
-            cached_photo_file_id = preview_file_id
-
-        if cached_photo_file_id:
+        preview = resolve_inline_media_preview(item)
+        if preview and preview[0] == "photo":
             answers.append(
                 InlineQueryResultCachedPhoto(
                     id=result_id,
-                    photo_file_id=cached_photo_file_id,
+                    photo_file_id=preview[1],
                     title=article_title[:100],
                     description=description[:250],
                     caption=content_text[:1024],
@@ -4269,22 +4332,26 @@ async def inline_search(inline_query: InlineQuery) -> None:
             )
             continue
 
-        poster_url = build_inline_poster_url(
-            title=title,
-            content_type=content_type,
-            year=year if isinstance(year, int) else None,
-            quality=quality,
-        )
+        if preview and preview[0] == "video":
+            answers.append(
+                InlineQueryResultCachedVideo(
+                    id=result_id,
+                    video_file_id=preview[1],
+                    title=article_title[:100],
+                    description=description[:250],
+                    caption=content_text[:1024],
+                    reply_markup=reply_markup,
+                )
+            )
+            continue
+
+        # Fallback without synthetic poster: keep result, but no fake thumbnail URL.
         answers.append(
-            InlineQueryResultPhoto(
+            InlineQueryResultArticle(
                 id=result_id,
-                photo_url=poster_url,
-                thumbnail_url=poster_url,
-                photo_width=600,
-                photo_height=900,
                 title=article_title[:100],
                 description=description[:250],
-                caption=content_text[:1024],
+                input_message_content=InputTextMessageContent(message_text=content_text[:4000]),
                 reply_markup=reply_markup,
             )
         )

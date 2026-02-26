@@ -1966,6 +1966,18 @@ def movie_supports_shorts(media_type: str) -> bool:
     return media_type in {"video", "document"}
 
 
+def shorts_tools_ready() -> bool:
+    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def shorts_tools_install_hint() -> str:
+    return (
+        "Serverda ffmpeg/ffprobe topilmadi.\n"
+        "Ubuntu: sudo apt update && sudo apt install -y ffmpeg\n"
+        "Windows: winget install Gyan.FFmpeg (yoki choco install ffmpeg)"
+    )
+
+
 async def run_subprocess(cmd: list[str], timeout: float = 240.0) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *cmd,
@@ -2115,8 +2127,8 @@ async def generate_movie_shorts(
 ) -> tuple[list[str], str | None]:
     if count < 1 or count > SHORTS_MAX_COUNT:
         return [], "Noto'g'ri son tanlandi."
-    if shutil.which(FFMPEG_BIN) is None or shutil.which(FFPROBE_BIN) is None:
-        return [], "Serverda ffmpeg/ffprobe topilmadi."
+    if not shorts_tools_ready():
+        return [], shorts_tools_install_hint()
 
     tmp_dir = tempfile.mkdtemp(prefix="kino_shorts_")
     input_path = os.path.join(tmp_dir, "source.mp4")
@@ -2187,6 +2199,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
     is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", movie["id"]))
+    is_admin_requester = bool(requester_id and db.is_admin(requester_id))
     await send_stored_media(
         message,
         media_type=movie["media_type"],
@@ -2195,7 +2208,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         reply_markup=build_movie_actions_kb(
             movie["id"],
             is_favorite=is_favorite,
-            allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
+            allow_shorts=is_admin_requester and movie_supports_shorts(str(movie.get("media_type") or "")),
         ),
     )
     db.increment_movie_downloads(movie["id"])
@@ -2251,7 +2264,7 @@ async def notify_requesters_for_content(
                     reply_markup=build_movie_actions_kb(
                         str(movie.get("id") or ""),
                         is_favorite=False,
-                        allow_shorts=movie_supports_shorts(str(movie.get("media_type") or "")),
+                        allow_shorts=False,
                     ),
                 )
             elif content_type == "serial" and serial_id and username:
@@ -2923,6 +2936,19 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
             f"✅ Kino muvaffaqiyatli saqlandi!{note}",
             reply_markup=admin_menu_kb(),
         )
+        saved_movie_id = str((saved_movie or {}).get("id") or "")
+        saved_media_type = str((saved_movie or {}).get("media_type") or media_type)
+        if saved_movie_id and movie_supports_shorts(saved_media_type):
+            if shorts_tools_ready():
+                await message.answer(
+                    f"🎞 {movie.title}\nInstagram uchun qisqa video tayyorlaymizmi? (max: {SHORTS_MAX_COUNT})",
+                    reply_markup=build_shorts_count_kb(saved_movie_id),
+                )
+            else:
+                await message.answer(
+                    "⚠️ Instagram uchun qisqa video funksiyasi vaqtincha ishlamaydi.\n"
+                    f"{shorts_tools_install_hint()}"
+                )
     else:
         await message.answer("⚠️ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
 
@@ -4134,11 +4160,12 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
         if content_type == "movie":
             movie = db.get_movie_by_id(content_ref)
             is_favorite = db.is_favorite(callback.from_user.id, "movie", content_ref)
+            is_admin_user = db.is_admin(callback.from_user.id)
             await callback.message.edit_reply_markup(
                 reply_markup=build_movie_actions_kb(
                     content_ref,
                     is_favorite,
-                    allow_shorts=movie_supports_shorts(str((movie or {}).get("media_type") or "")),
+                    allow_shorts=is_admin_user and movie_supports_shorts(str((movie or {}).get("media_type") or "")),
                 ),
             )
         else:
@@ -4163,6 +4190,9 @@ async def ask_movie_shorts(callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message:
         await callback.answer()
         return
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("Bu funksiya faqat admin panel uchun.", show_alert=True)
+        return
     movie_id = callback.data.split(":", 3)[-1].strip()
     movie = db.get_movie_by_id(movie_id)
     if not movie:
@@ -4171,14 +4201,8 @@ async def ask_movie_shorts(callback: CallbackQuery) -> None:
     if not movie_supports_shorts(str(movie.get("media_type") or "")):
         await callback.answer("Bu turdagi kontentdan qisqa video qilib bo'lmaydi", show_alert=True)
         return
-
-    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
-    if not ok:
-        await callback.message.answer(
-            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
-            reply_markup=build_subscribe_keyboard(channels),
-        )
-        await callback.answer("Obuna kerak")
+    if not shorts_tools_ready():
+        await callback.answer(shorts_tools_install_hint(), show_alert=True)
         return
 
     title = str(movie.get("title") or "Kino")
@@ -4193,6 +4217,9 @@ async def ask_movie_shorts(callback: CallbackQuery) -> None:
 async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message:
         await callback.answer()
+        return
+    if not db.is_admin(callback.from_user.id):
+        await callback.answer("Bu funksiya faqat admin panel uchun.", show_alert=True)
         return
     parts = callback.data.split(":", 4)
     if len(parts) != 5 or not parts[4].isdigit():
@@ -4213,19 +4240,13 @@ async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
     if not movie_supports_shorts(media_type) or not file_id:
         await callback.answer("Bu kinodan qisqa video qilib bo'lmaydi", show_alert=True)
         return
-
-    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
-    if not ok:
-        await callback.message.answer(
-            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
-            reply_markup=build_subscribe_keyboard(channels),
-        )
-        await callback.answer("Obuna kerak")
+    if not shorts_tools_ready():
+        await callback.answer(shorts_tools_install_hint(), show_alert=True)
         return
 
     await callback.answer("Tayyorlanmoqda...")
     await callback.message.answer(
-        f"⏳ {count} ta qisqa video tayyorlanmoqda. Iltimos kuting..."
+        f"⏳ Instagram uchun {count} ta qisqa video tayyorlanmoqda. Iltimos kuting..."
     )
 
     output_paths: list[str] = []
@@ -4244,7 +4265,7 @@ async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
         for idx, video_path in enumerate(output_paths, start=1):
             await callback.message.answer_video(
                 video=FSInputFile(video_path),
-                caption=f"🎬 {title}\nQisqa video {idx}/{len(output_paths)}",
+                caption=f"🎬 {title}\nInstagram short {idx}/{len(output_paths)}",
             )
     finally:
         if output_paths:

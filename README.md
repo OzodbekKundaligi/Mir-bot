@@ -71,6 +71,20 @@ Deploy uchun tayyor fayllar:
 - `webapp/client/Dockerfile` (frontend)
 - `docker-compose.yml` (lokal full stack)
 
+`Procfile` va `Dockerfile` hozir **bitta Railway service** uchun sozlangan:
+
+- `python run_all.py` ishga tushadi
+- ichida bir paytda:
+  - FastAPI (`PORT` da)
+  - Telegram bot polling
+
+Logda quyilar ko'rinadi:
+
+- `WEB API listen: ...`
+- `Public URL: ...`
+- `webapi pid=...`
+- `bot pid=...`
+
 Lokal ishga tushirish:
 
 ```powershell

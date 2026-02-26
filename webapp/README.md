@@ -81,20 +81,32 @@ Servislar:
 - API: `webapp/server/Dockerfile`
 - Client: `webapp/client/Dockerfile`
 
-## 5) Railway deploy
+## 5) Railway deploy (bitta service)
 
-Bitta repodan 3 ta service ochish tavsiya:
+Sizda bitta service bo'lsa, shu loyiha tayyor:
 
-1. `kino-bot-worker`
-   - Dockerfile: `Dockerfile.bot`
-   - Start: `python main.py`
-2. `kino-web-api`
-   - Dockerfile: `webapp/server/Dockerfile`
-   - Public URL oladi (masalan: `https://kino-web-api.up.railway.app`)
-3. `kino-web-client`
-   - Dockerfile: `webapp/client/Dockerfile`
-   - Build arg: `VITE_API_BASE=https://kino-web-api.up.railway.app`
+1. Start command: `python run_all.py`
+2. Bu bir paytda ikkalasini ishga tushiradi:
+   - Bot polling (`main.py`)
+   - Web API (`webapp/server/app.py`) `PORT` da
+3. Frontend build fayllari `webapp/client/dist` ichidan FastAPI orqali beriladi.
 
-Keyin bot `.env` ichida:
+Shart bo'lgan ENV:
 
-- `WEBAPP_URL=https://kino-web-client.up.railway.app`
+- `BOT_TOKEN`
+- `MONGODB_URI`
+- `MONGODB_DB`
+- `ADMIN_IDS`
+- `WEBAPP_URL=https://mir-bot-production.up.railway.app/`
+
+Konsolda tekshirish:
+
+- `[boot] WEB API listen: 0.0.0.0:<PORT>`
+- `[boot] Public URL: https://...`
+- `[boot] webapi pid=...`
+- `[boot] bot pid=...`
+
+Ishlayotganini tekshirish:
+
+- `https://mir-bot-production.up.railway.app/health` -> `{"ok": true}`
+- `https://mir-bot-production.up.railway.app/` -> Web App sahifasi

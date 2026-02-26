@@ -5,6 +5,7 @@ import os
 import re
 import time
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -13,6 +14,8 @@ from bson import ObjectId
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pymongo import DESCENDING, MongoClient
 
@@ -23,7 +26,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 BOT_USERNAME = os.getenv("BOT_USERNAME", "@MirTopKinoBot").strip()
-WEBAPP_ALLOWED_ORIGINS = [item.strip() for item in os.getenv("WEBAPP_ALLOWED_ORIGINS", "mir-bot-production.up.railway.app").split(",") if item.strip()]
+WEBAPP_ALLOWED_ORIGINS_RAW = [item.strip() for item in os.getenv("WEBAPP_ALLOWED_ORIGINS", "*").split(",") if item.strip()]
 WEBAPP_AUTH_MAX_AGE_SECONDS = int(os.getenv("WEBAPP_AUTH_MAX_AGE_SECONDS", "604800"))
 WEBAPP_ENABLE_DEV_AUTH = os.getenv("WEBAPP_ENABLE_DEV_AUTH", "0").strip() in {"1", "true", "yes"}
 WEBAPP_DEV_USER_ID = int(os.getenv("WEBAPP_DEV_USER_ID", "0") or 0)
@@ -32,6 +35,23 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required for webapp backend.")
 if not MONGODB_URI:
     raise RuntimeError("MONGODB_URI is required for webapp backend.")
+
+
+def _normalize_origins(items: list[str]) -> list[str]:
+    if not items:
+        return ["*"]
+    if "*" in items:
+        return ["*"]
+    normalized: list[str] = []
+    for item in items:
+        if item.startswith(("http://", "https://")):
+            normalized.append(item.rstrip("/"))
+        else:
+            normalized.append(f"https://{item.rstrip('/')}")
+    return normalized
+
+
+WEBAPP_ALLOWED_ORIGINS = _normalize_origins(WEBAPP_ALLOWED_ORIGINS_RAW)
 
 
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
@@ -53,6 +73,10 @@ comments_col.create_index([("content_type", 1), ("content_ref", 1), ("created_at
 history_col.create_index([("user_tg_id", 1), ("viewed_at", -1)])
 downloads_col.create_index([("user_tg_id", 1), ("created_at", -1)])
 
+BASE_DIR = Path(__file__).resolve().parent
+CLIENT_DIST_DIR = BASE_DIR.parent / "client" / "dist"
+CLIENT_ASSETS_DIR = CLIENT_DIST_DIR / "assets"
+
 
 app = FastAPI(title="Kino Bot WebApp API", version="1.0.0")
 app.add_middleware(
@@ -62,6 +86,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if CLIENT_ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(CLIENT_ASSETS_DIR)), name="client-assets")
 
 
 MEMBER_STATUSES = {"creator", "administrator", "member", "restricted"}
@@ -944,3 +970,36 @@ async def media_file(
         raise HTTPException(status_code=502, detail="Cannot download file from Telegram.")
     media_type = resp.headers.get("content-type") or "application/octet-stream"
     return Response(content=resp.content, media_type=media_type)
+
+
+@app.get("/", include_in_schema=False)
+async def web_index() -> Response:
+    index_file = CLIENT_DIST_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
+    return Response(
+        "Web client build topilmadi. `webapp/client` ichida npm run build qiling.",
+        media_type="text/plain",
+        status_code=200,
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str) -> Response:
+    if full_path.startswith("api/") or full_path in {"health"}:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    index_file = CLIENT_DIST_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=404, detail="Web client build not found.")
+
+    requested = (CLIENT_DIST_DIR / full_path).resolve()
+    base_resolved = CLIENT_DIST_DIR.resolve()
+    try:
+        requested.relative_to(base_resolved)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    if requested.exists() and requested.is_file():
+        return FileResponse(requested)
+    return FileResponse(index_file)

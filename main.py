@@ -1114,25 +1114,25 @@ def parse_admin_ids(value: str) -> list[int]:
     return result
 
 
-BTN_ADMIN_PANEL = "Admin panel"
-BTN_SUBS = "Majburiy obuna"
-BTN_ADD_MOVIE = "Kino qo'shish"
-BTN_ADD_SERIAL = "Serial qo'shish"
-BTN_DEL_MOVIE = "Kino o'chirish"
-BTN_EDIT_CONTENT = "Kontent tahrirlash"
-BTN_RANDOM_CODES = "Random kod"
-BTN_LIST_MOVIES = "Kino va serial ro'yxati"
-BTN_STATS = "Statistika"
-BTN_ADD_ADMIN = "Admin qo'shish"
-BTN_BROADCAST = "Habar yuborish"
-BTN_REQUESTS = "So'rovlar"
-BTN_BACK = "Ortga"
-BTN_CANCEL = "Bekor qilish"
-BTN_SERIAL_DONE = "Serialni yakunlash"
-BTN_SEARCH_NAME = "Nom bo'yicha qidirish"
-BTN_FILTER = "Filter"
-BTN_FAVORITES = "Sevimlilarim"
-BTN_WEBAPP = "Web ilova"
+BTN_ADMIN_PANEL = "🛠 Admin panel"
+BTN_SUBS = "📢 Majburiy obuna"
+BTN_ADD_MOVIE = "➕ Kino qo'shish"
+BTN_ADD_SERIAL = "📺 Serial qo'shish"
+BTN_DEL_MOVIE = "🗑 Kino o'chirish"
+BTN_EDIT_CONTENT = "✏️ Kontent tahrirlash"
+BTN_RANDOM_CODES = "🎲 Random kod"
+BTN_LIST_MOVIES = "📚 Kino va serial ro'yxati"
+BTN_STATS = "📊 Statistika"
+BTN_ADD_ADMIN = "👤 Admin qo'shish"
+BTN_BROADCAST = "📣 Habar yuborish"
+BTN_REQUESTS = "📥 So'rovlar"
+BTN_BACK = "⬅️ Ortga"
+BTN_CANCEL = "❌ Bekor qilish"
+BTN_SERIAL_DONE = "✅ Serialni yakunlash"
+BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
+BTN_FILTER = "🎛 Filter"
+BTN_FAVORITES = "⭐ Sevimlilarim"
+BTN_WEBAPP = "🌐 Web ilova"
 BOT_SIGNATURE = "@MirTopKinoBot"
 
 
@@ -1230,9 +1230,9 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
 
 def sub_manage_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="â• Kanal qo'shish", callback_data="sub_add")
-    builder.button(text="ğŸ“‹ Kanallar ro'yxati", callback_data="sub_list")
-    builder.button(text="ğŸ—‘ Kanal o'chirish", callback_data="sub_delete_menu")
+    builder.button(text="➕ Kanal qo'shish", callback_data="sub_add")
+    builder.button(text="📋 Kanallar ro'yxati", callback_data="sub_list")
+    builder.button(text="🗑 Kanal o'chirish", callback_data="sub_delete_menu")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -1258,15 +1258,15 @@ def build_subscribe_keyboard(channels: list[dict[str, Any]]) -> InlineKeyboardMa
         ref = channel["channel_ref"]
         title = channel["title"] or ref
         if join_link:
-            builder.row(InlineKeyboardButton(text=f"ğŸ“Œ {title}", url=join_link))
+            builder.row(InlineKeyboardButton(text=f"📌 {title}", url=join_link))
         elif ref.startswith("@"):
             builder.row(
                 InlineKeyboardButton(
-                    text=f"ğŸ“Œ {title}",
+                    text=f"📌 {title}",
                     url=f"https://t.me/{ref[1:]}",
                 )
             )
-    builder.row(InlineKeyboardButton(text="âœ… Obunani tekshirish", callback_data="check_sub"))
+    builder.row(InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub"))
     return builder.as_markup()
 
 
@@ -1432,7 +1432,7 @@ def resolve_inline_media_preview(item: dict[str, Any]) -> tuple[str, str] | None
 
 def build_not_found_request_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="ğŸ“© So'rov qoldirish", callback_data="req_create")
+    builder.button(text="📩 So'rov qoldirish", callback_data="req_create")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -1441,7 +1441,7 @@ def build_movie_actions_kb(
     movie_id: str,
     is_favorite: bool,
 ) -> InlineKeyboardMarkup:
-    fav_text = "ğŸ’” Sevimlidan olib tashlash" if is_favorite else "â­ Sevimliga qo'shish"
+    fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
     fav_action = "del" if is_favorite else "add"
     builder = InlineKeyboardBuilder()
     builder.button(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")
@@ -1472,7 +1472,7 @@ def build_search_results_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup
             label = f"{label} ({meta})"
         if len(label) > 60:
             label = f"{label[:57]}..."
-        icon = "ğŸ¬" if content_type == "movie" else "ğŸ“º"
+        icon = "🎬" if content_type == "movie" else "📺"
         builder.button(text=f"{icon} {label}", callback_data=f"open:{content_type}:{content_ref}")
     builder.adjust(1)
     markup = builder.as_markup()
@@ -1495,11 +1495,11 @@ def build_favorites_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup | No
             display = f"{display[:45]}..."
         builder.row(
             InlineKeyboardButton(
-                text=f"â–¶ï¸ {display}",
+                text=f"▶️ {display}",
                 callback_data=f"open:{content_type}:{content_ref}",
             ),
             InlineKeyboardButton(
-                text="âŒ",
+                text="❌",
                 callback_data=f"fav:del:{content_type}:{content_ref}",
             ),
         )
@@ -1530,16 +1530,16 @@ def build_filter_page_kb(
         short = f"{code} - {title}" if code else title
         if len(short) > 58:
             short = f"{short[:55]}..."
-        icon = "ğŸ¬" if content_type == "movie" else "ğŸ“º"
+        icon = "🎬" if content_type == "movie" else "📺"
         builder.button(text=f"{icon} {short}", callback_data=f"open:{content_type}:{content_ref}")
     builder.adjust(1)
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="â¬…ï¸", callback_data=f"filter_page:{page - 1}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"filter_page:{page - 1}"))
     nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="filter_page:noop"))
     if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton(text="â¡ï¸", callback_data=f"filter_page:{page + 1}"))
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"filter_page:{page + 1}"))
     builder.row(*nav_row)
     return builder.as_markup()
 
@@ -1587,7 +1587,7 @@ def build_serial_caption(
 ) -> str:
     base = build_movie_caption(title, description)
     meta = format_meta_line(year, quality, genres)
-    tail = f"ğŸ Qismlar soni: {episodes_count}"
+    tail = f"🎞 Qismlar soni: {episodes_count}"
     if meta:
         tail = f"{meta}\n{tail}"
     if base:
@@ -1601,7 +1601,7 @@ def build_serial_episodes_kb(
     is_favorite: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    fav_text = "ğŸ’” Sevimlidan olib tashlash" if is_favorite else "â­ Sevimliga qo'shish"
+    fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
     fav_action = "del" if is_favorite else "add"
     builder.row(
         InlineKeyboardButton(
@@ -1633,9 +1633,9 @@ def build_episode_navigation_kb(
 
     builder = InlineKeyboardBuilder()
     if prev_episode is not None:
-        builder.button(text="â¬…ï¸ Oldingi qism", callback_data=f"serial_ep:{serial_id}:{prev_episode}")
+        builder.button(text="⬅️ Oldingi qism", callback_data=f"serial_ep:{serial_id}:{prev_episode}")
     if next_episode is not None:
-        builder.button(text="â¡ï¸ Keyingi qism", callback_data=f"serial_ep:{serial_id}:{next_episode}")
+        builder.button(text="➡️ Keyingi qism", callback_data=f"serial_ep:{serial_id}:{next_episode}")
     builder.adjust(2)
     return builder.as_markup()
 
@@ -1868,12 +1868,12 @@ def build_start_deeplink(username: str, payload: str) -> str:
 async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: int | None = None) -> bool:
     serial = db.get_serial(serial_id)
     if not serial:
-        await message.answer("âŒ Serial topilmadi.")
+        await message.answer("❌ Serial topilmadi.")
         return False
 
     episodes = db.list_serial_episodes(serial_id)
     if not episodes:
-        await message.answer("ğŸ“­ Bu serialga hali qism qo'shilmagan.")
+        await message.answer("📭 Bu serialga hali qism qo'shilmagan.")
         return False
 
     episode_numbers = [row["episode_number"] for row in episodes]
@@ -1890,7 +1890,7 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
         genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
     await message.answer(
-        f"{serial_caption}\n\nğŸ‘‡ Kerakli qismni tanlang:",
+        f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
         reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers, is_favorite=is_favorite),
     )
     return True
@@ -1965,7 +1965,7 @@ async def get_bot_username(bot: Bot) -> str | None:
 async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
     movie = db.get_movie_by_id(movie_id)
     if not movie:
-        await message.answer("âŒ Kino topilmadi.")
+        await message.answer("❌ Kino topilmadi.")
         return False
     caption = append_meta_to_caption(
         build_movie_caption(movie["title"], movie["description"]),
@@ -2045,7 +2045,7 @@ async def notify_requesters_for_content(
             elif content_type == "serial" and serial_id and username:
                 deeplink = build_start_deeplink(username, f"s_{serial_id}")
                 kb = InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="ğŸ“¥ Qismlarni ochish", url=deeplink)]]
+                    inline_keyboard=[[InlineKeyboardButton(text="📥 Qismlarni ochish", url=deeplink)]]
                 )
                 await bot.send_message(
                     chat_id=user_id,
@@ -2087,7 +2087,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "7903688837,7546181748"))
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://mir-bot-production.up.railway.app/").strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi. .env faylga BOT_TOKEN yozing.")
@@ -2140,13 +2140,13 @@ async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[s
 
 async def ask_for_subscription(message: Message, channels: list[dict[str, Any]]) -> None:
     text_lines = [
-        "â€¼ï¸ Botdan foydalanish uchun quyida keltirilgan barcha kanallarga obuna bo'lishingiz kerak!",
+        "‼️ Botdan foydalanish uchun quyida keltirilgan barcha kanallarga obuna bo'lishingiz kerak!",
         "",
-        "ğŸ‘‡ Majburiy kanallar:",
+        "👇 Majburiy kanallar:",
     ]
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
-        text_lines.append(f"â€¢ {title}")
+        text_lines.append(f"• {title}")
     await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
 
 
@@ -2173,12 +2173,12 @@ async def send_filter_page_message(
 ) -> None:
     total = len(results)
     if total == 0:
-        await message.answer("ğŸ“­ Filter bo'yicha kontent topilmadi.")
+        await message.answer("📭 Filter bo'yicha kontent topilmadi.")
         return
     total_pages = max(1, (total + 8 - 1) // 8)
     safe_page = max(0, min(page, total_pages - 1))
     text = (
-        f"ğŸ› Filter natijalari: {total} ta\n"
+        f"🎛 Filter natijalari: {total} ta\n"
         f"Sahifa: {safe_page + 1}/{total_pages}\n"
         "Kerakli kontentni tanlang:"
     )
@@ -2221,8 +2221,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     admin = db.is_admin(message.from_user.id)
     text = (
-        "ğŸ¬ Assalomu alaykum, Kino Qidiruvi Botga xush kelibsiz!\n\n"
-        "ğŸ” Kino yoki serial kodini yuboring.\n"
+        "🎬 Assalomu alaykum, Kino Qidiruvi Botga xush kelibsiz!\n\n"
+        "🔎 Kino yoki serial kodini yuboring.\n"
         "Yoki tugmalar orqali nom bo'yicha qidiruv, filter va sevimlilarni ishlating."
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
@@ -2244,7 +2244,7 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
             await state.set_data(cleaned_state)
             sent = await send_serial_selector_by_id(callback.message, pending_serial_id, user.id)
             if sent:
-                await callback.answer("âœ… Tasdiqlandi")
+                await callback.answer("✅ Tasdiqlandi")
                 return
         if pending_movie_id and callback.message:
             cleaned_state = dict(state_data)
@@ -2255,18 +2255,18 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
             except (TelegramBadRequest, TelegramForbiddenError, ValueError):
                 sent = False
             if sent:
-                await callback.answer("âœ… Tasdiqlandi")
+                await callback.answer("✅ Tasdiqlandi")
                 return
         await callback.message.answer(
-            "âœ… Obuna tasdiqlandi!\n\nğŸ” Endi kino yoki serial kodini chatga yozing."
+            "✅ Obuna tasdiqlandi!\n\n🔎 Endi kino yoki serial kodini chatga yozing."
         )
-        await callback.answer("âœ… Tasdiqlandi")
+        await callback.answer("✅ Tasdiqlandi")
     else:
         await callback.message.answer(
-            "â— Hali ham barcha kanallarga obuna bo'linmagan.",
+            "❗ Hali ham barcha kanallarga obuna bo'linmagan.",
             reply_markup=build_subscribe_keyboard(channels),
         )
-        await callback.answer("â— Obuna to'liq emas")
+        await callback.answer("❗ Obuna to'liq emas")
 
 
 @router.message(F.text.in_({BTN_ADMIN_PANEL, "Admin panel"}))
@@ -2274,7 +2274,7 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("Admin panelga xush kelibsiz!", reply_markup=admin_menu_kb())
+    await message.answer("🛠 Admin panelga xush kelibsiz!", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
@@ -2282,25 +2282,25 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("Asosiy menyu", reply_markup=main_menu_kb(True))
+    await message.answer("🏠 Asosiy menyu", reply_markup=main_menu_kb(True))
 
 
 @router.message(F.text.in_({BTN_WEBAPP, "Web ilova"}))
 async def open_webapp_entry(message: Message) -> None:
     if not WEBAPP_URL:
-        await message.answer("WEBAPP_URL sozlanmagan.")
+        await message.answer("⚠️ WEBAPP_URL sozlanmagan.")
         return
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Web ilovani ochish", web_app=WebAppInfo(url=WEBAPP_URL))]]
+        inline_keyboard=[[InlineKeyboardButton(text="🌐 Web ilovani ochish", web_app=WebAppInfo(url=WEBAPP_URL))]]
     )
-    await message.answer("Ilovani ochish uchun tugmani bosing:", reply_markup=kb)
+    await message.answer("🌐 Ilovani ochish uchun tugmani bosing:", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_SUBS, "Majburiy obuna"}))
 async def mandatory_subscriptions_menu(message: Message) -> None:
     if not message.from_user or not guard_admin(message):
         return
-    await message.answer("Majburiy obuna boshqaruvi", reply_markup=sub_manage_kb())
+    await message.answer("📢 Majburiy obuna boshqaruvi", reply_markup=sub_manage_kb())
 
 
 @router.callback_query(F.data == "sub_add")
@@ -2309,7 +2309,7 @@ async def add_sub_start(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
     prompt = (
-        "ğŸ“Œ Kanal ma'lumotini quyidagicha yuboring:\n"
+        "📌 Kanal ma'lumotini quyidagicha yuboring:\n"
         "1) @kanal_username\n"
         "2) -1001234567890|https://t.me/+invite_link\n\n"
         "Private kanal uchun avval ID, keyin alohida invite link yuborish ham mumkin.\n"
@@ -2330,7 +2330,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     join_link: str | None = None
@@ -2369,7 +2369,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
     if not channel_ref:
         if normalize_invite_link_input(text):
             await message.answer(
-                "âš ï¸ Invite linkni alohida yuborish uchun avval kanal ID sini yuboring.\n"
+                "⚠️ Invite linkni alohida yuborish uchun avval kanal ID sini yuboring.\n"
                 "Masalan:\n"
                 "1) -1001234567890\n"
                 "2) https://t.me/+invite_link\n\n"
@@ -2377,7 +2377,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
             )
             return
         await message.answer(
-            "âš ï¸ Noto'g'ri format.\n"
+            "⚠️ Noto'g'ri format.\n"
             "To'g'ri formatlar:\n"
             "1) @kanal_username\n"
             "2) -1001234567890|https://t.me/+invite_link\n"
@@ -2395,7 +2395,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
         title = title or channel_ref
     except (TelegramBadRequest, TelegramForbiddenError):
         await message.answer(
-            "âŒ Kanal topilmadi yoki bot kanalga kira olmayapti.\n"
+            "❌ Kanal topilmadi yoki bot kanalga kira olmayapti.\n"
             "Kanalni tekshiring va botni kanalga admin qiling."
         )
         return
@@ -2404,7 +2404,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
         me = await message.bot.get_me()
         me_member = await message.bot.get_chat_member(chat_id=channel_ref, user_id=me.id)
         if me_member.status not in {ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}:
-            await message.answer("âš ï¸ Bot majburiy obunani tekshirishi uchun kanalda admin bo'lishi shart.")
+            await message.answer("⚠️ Bot majburiy obunani tekshirishi uchun kanalda admin bo'lishi shart.")
             return
         if (
             channel_ref.lstrip("-").isdigit()
@@ -2412,12 +2412,12 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
             and not getattr(me_member, "can_invite_users", False)
         ):
             await message.answer(
-                "â„¹ï¸ Eslatma: zayafka yuborilgani bilan obunani o'tkazish uchun botda "
+                "ℹ️ Eslatma: zayafka yuborilgani bilan obunani o'tkazish uchun botda "
                 "'Invite users via link' (join requestlarni ko'rish) huquqi bo'lishi kerak."
             )
     except (TelegramBadRequest, TelegramForbiddenError):
         await message.answer(
-            "âŒ Bot bu kanalda a'zolar obunasini tekshira olmayapti.\n"
+            "❌ Bot bu kanalda a'zolar obunasini tekshira olmayapti.\n"
             "Botni kanalga admin qilib, qaytadan qo'shing."
         )
         return
@@ -2438,7 +2438,7 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
             pending_channel_title=title or channel_ref,
         )
         await message.answer(
-            "âš ï¸ Private kanal uchun join link kerak.\n"
+            "⚠️ Private kanal uchun join link kerak.\n"
             "Format: -1001234567890|https://t.me/+invite_link\n"
             "Yoki endi faqat invite link yuboring: https://t.me/+invite_link"
         )
@@ -2448,12 +2448,12 @@ async def add_sub_finish(message: Message, state: FSMContext) -> None:
     await state.clear()
     if created:
         await message.answer(
-            f"âœ… Kanal qo'shildi: {title}",
+            f"✅ Kanal qo'shildi: {title}",
             reply_markup=admin_menu_kb(),
         )
     else:
         await message.answer(
-            "â„¹ï¸ Bu kanal allaqachon ro'yxatda.",
+            "ℹ️ Bu kanal allaqachon ro'yxatda.",
             reply_markup=admin_menu_kb(),
         )
 
@@ -2465,14 +2465,14 @@ async def list_subscriptions(callback: CallbackQuery) -> None:
         return
     channels = db.get_required_channels()
     if not channels:
-        await callback.message.answer("ğŸ“­ Majburiy obuna ro'yxati hozircha bo'sh.")
+        await callback.message.answer("📭 Majburiy obuna ro'yxati hozircha bo'sh.")
         await callback.answer()
         return
 
-    lines = ["ğŸ“¢ Majburiy obuna kanallari:"]
+    lines = ["📢 Majburiy obuna kanallari:"]
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
-        lines.append(f"â€¢ {title} ({ch['channel_ref']})")
+        lines.append(f"• {title} ({ch['channel_ref']})")
     await callback.message.answer("\n".join(lines))
     await callback.answer()
 
@@ -2484,16 +2484,16 @@ async def delete_subscriptions_menu(callback: CallbackQuery) -> None:
         return
     channels = db.get_required_channels()
     if not channels:
-        await callback.message.answer("ğŸ“­ O'chirish uchun kanal topilmadi.")
+        await callback.message.answer("📭 O'chirish uchun kanal topilmadi.")
         await callback.answer()
         return
 
     builder = InlineKeyboardBuilder()
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
-        builder.button(text=f"âŒ {title}", callback_data=f"sub_del:{ch['channel_ref']}")
+        builder.button(text=f"❌ {title}", callback_data=f"sub_del:{ch['channel_ref']}")
     builder.adjust(1)
-    await callback.message.answer("ğŸ—‘ O'chiriladigan kanalni tanlang:", reply_markup=builder.as_markup())
+    await callback.message.answer("🗑 O'chiriladigan kanalni tanlang:", reply_markup=builder.as_markup())
     await callback.answer()
 
 
@@ -2505,9 +2505,9 @@ async def delete_channel(callback: CallbackQuery) -> None:
     _, channel_ref = callback.data.split(":", 1)
     deleted = db.remove_required_channel(channel_ref)
     if deleted:
-        await callback.message.answer("âœ… Kanal o'chirildi.")
+        await callback.message.answer("✅ Kanal o'chirildi.")
     else:
-        await callback.message.answer("âš ï¸ Kanal topilmadi.")
+        await callback.message.answer("⚠️ Kanal topilmadi.")
     await callback.answer()
 
 
@@ -2527,7 +2527,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
     ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
     if not ok:
         await callback.message.answer(
-            "â— Avval barcha majburiy kanallarga obuna bo'ling.",
+            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
             reply_markup=build_subscribe_keyboard(channels),
         )
         await callback.answer("Obuna kerak")
@@ -2568,8 +2568,8 @@ async def add_movie_start(message: Message, state: FSMContext) -> None:
     await state.set_state(AddMovieState.waiting_code)
     suggested_codes = ", ".join(generate_missing_numeric_codes(db.get_all_codes(), 5))
     await message.answer(
-        "ğŸ¬ Yangi kino kodini yuboring:\n"
-        f"ğŸ’¡ Bazada yo'q 5 ta kod: {suggested_codes}",
+        "🎬 Yangi kino kodini yuboring:\n"
+        f"💡 Bazada yo'q 5 ta kod: {suggested_codes}",
         reply_markup=cancel_kb(),
     )
 
@@ -2582,17 +2582,17 @@ async def add_movie_code(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Kod bo'sh bo'lmasin.")
         return
     if db.code_exists(text):
-        await message.answer("âš ï¸ Bu kod allaqachon band. Boshqa kod yuboring.")
+        await message.answer("⚠️ Bu kod allaqachon band. Boshqa kod yuboring.")
         return
     await state.update_data(code=text)
     await state.set_state(AddMovieState.waiting_title)
-    await message.answer("ğŸ“ Kino nomini yuboring:")
+    await message.answer("📝 Kino nomini yuboring:")
 
 
 @router.message(AddMovieState.waiting_title)
@@ -2603,7 +2603,7 @@ async def add_movie_title(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Nomi bo'sh bo'lmasin.")
@@ -2611,7 +2611,7 @@ async def add_movie_title(message: Message, state: FSMContext) -> None:
     await state.update_data(title=text)
     await state.set_state(AddMovieState.waiting_description)
     await message.answer(
-        "ğŸ“„ Kino tavsifi/caption yuboring (video ostida chiqadi).\n"
+        "📄 Kino tavsifi/caption yuboring (video ostida chiqadi).\n"
         "Kerak bo'lmasa: `-` yuboring."
     )
 
@@ -2624,13 +2624,13 @@ async def add_movie_description(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     description = "" if text == "-" else text
     await state.update_data(description=description)
     await state.set_state(AddMovieState.waiting_metadata)
     await message.answer(
-        "ğŸ· Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
         "Masalan: 2024|1080p|action,drama\n"
         "Agar kerak bo'lmasa: -"
     )
@@ -2644,13 +2644,13 @@ async def add_movie_metadata(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     metadata = parse_metadata_input(text)
     if metadata is None:
         await message.answer(
-            "âš ï¸ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
             "Masalan: 2024|1080p|action,drama\n"
             "Yoki: -"
         )
@@ -2663,10 +2663,10 @@ async def add_movie_metadata(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(AddMovieState.waiting_media)
     await message.answer(
-        "ğŸ“¤ Endi media yuboring:\n"
-        "â€¢ video / document / photo\n"
-        "â€¢ yoki file_id / link matn\n\n"
-        "â„¹ï¸ Telegram post link yuborsangiz kanal captioni olinmaydi,\n"
+        "📤 Endi media yuboring:\n"
+        "• video / document / photo\n"
+        "• yoki file_id / link matn\n\n"
+        "ℹ️ Telegram post link yuborsangiz kanal captioni olinmaydi,\n"
         "siz yozgan caption chiqadi."
     )
 
@@ -2679,7 +2679,7 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
 
     if is_cancel_text(message.text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     media = parse_message_media(message)
@@ -2718,13 +2718,13 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         )
         note = ""
         if delivered or failed:
-            note = f"\nğŸ“£ So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+            note = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await message.answer(
-            f"âœ… Kino muvaffaqiyatli saqlandi!{note}",
+            f"✅ Kino muvaffaqiyatli saqlandi!{note}",
             reply_markup=admin_menu_kb(),
         )
     else:
-        await message.answer("âš ï¸ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_ADD_SERIAL, "Serial qo'shish"}))
@@ -2734,8 +2734,8 @@ async def add_serial_start(message: Message, state: FSMContext) -> None:
     await state.set_state(AddSerialState.waiting_code)
     suggested_codes = ", ".join(generate_missing_numeric_codes(db.get_all_codes(), 5))
     await message.answer(
-        "ğŸ“º Yangi serial kodi yuboring:\n"
-        f"ğŸ’¡ Bazada yo'q 5 ta kod: {suggested_codes}",
+        "📺 Yangi serial kodi yuboring:\n"
+        f"💡 Bazada yo'q 5 ta kod: {suggested_codes}",
         reply_markup=cancel_kb(),
     )
 
@@ -2748,17 +2748,17 @@ async def add_serial_code(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Kod bo'sh bo'lmasin.")
         return
     if db.code_exists(text):
-        await message.answer("âš ï¸ Bu kod allaqachon band. Boshqa kod yuboring.")
+        await message.answer("⚠️ Bu kod allaqachon band. Boshqa kod yuboring.")
         return
     await state.update_data(code=text)
     await state.set_state(AddSerialState.waiting_title)
-    await message.answer("ğŸ“ Serial nomini yuboring:")
+    await message.answer("📝 Serial nomini yuboring:")
 
 
 @router.message(AddSerialState.waiting_title)
@@ -2769,7 +2769,7 @@ async def add_serial_title(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Nomi bo'sh bo'lmasin.")
@@ -2777,7 +2777,7 @@ async def add_serial_title(message: Message, state: FSMContext) -> None:
     await state.update_data(title=text)
     await state.set_state(AddSerialState.waiting_description)
     await message.answer(
-        "ğŸ“„ Serial tavsifini yuboring.\n"
+        "📄 Serial tavsifini yuboring.\n"
         "Tavsif kerak bo'lmasa: `-` yuboring."
     )
 
@@ -2790,7 +2790,7 @@ async def add_serial_description(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     description = "" if text == "-" else text
     await state.update_data(
@@ -2798,7 +2798,7 @@ async def add_serial_description(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(AddSerialState.waiting_metadata)
     await message.answer(
-        "ğŸ· Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
         "Masalan: 2024|1080p|action,drama\n"
         "Agar kerak bo'lmasa: -"
     )
@@ -2813,13 +2813,13 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     metadata = parse_metadata_input(text)
     if metadata is None:
         await message.answer(
-            "âš ï¸ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
             "Masalan: 2024|1080p|action,drama\n"
             "Yoki: -"
         )
@@ -2831,7 +2831,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     description = str(data.get("description") or "")
     if not code or not title:
         await state.clear()
-        await message.answer("âš ï¸ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
 
     serial_id = db.add_serial(
@@ -2844,7 +2844,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     )
     if serial_id is None:
         await state.clear()
-        await message.answer("âš ï¸ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Bu kod allaqachon mavjud.", reply_markup=admin_menu_kb())
         return
 
     await state.update_data(
@@ -2857,7 +2857,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(AddSerialState.waiting_episode)
     await message.answer(
-        "ğŸ¬ Endi 1-qismni yuboring.\n"
+        "🎬 Endi 1-qismni yuboring.\n"
         "Video/document/photo yoki file_id/link yuborishingiz mumkin.\n"
         f"Yakunlash uchun: {BTN_SERIAL_DONE}",
         reply_markup=serial_upload_kb(),
@@ -2877,7 +2877,7 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
     episodes_added_raw = data.get("episodes_added", 0)
     if serial_id_raw is None:
         await state.clear()
-        await message.answer("âš ï¸ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
 
     serial_id = str(serial_id_raw)
@@ -2887,7 +2887,7 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
     if is_cancel_text(text):
         db.delete_serial(serial_id)
         await state.clear()
-        await message.answer("âŒ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
         return
 
     if is_serial_done_text(text):
@@ -2896,7 +2896,7 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
             return
         await state.set_state(AddSerialState.waiting_preview_media)
         await message.answer(
-            "ğŸ–¼ Endi preview uchun rasm/video yuboring.\n"
+            "🖼 Endi preview uchun rasm/video yuboring.\n"
             "O'tkazib yuborish uchun: -",
             reply_markup=cancel_kb(),
         )
@@ -2913,7 +2913,7 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
 
     created = db.add_serial_episode(serial_id, next_episode, media_type, file_id)
     if not created:
-        await message.answer("âš ï¸ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
+        await message.answer("⚠️ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
         return
 
     await state.update_data(
@@ -2921,8 +2921,8 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
         episodes_added=episodes_added + 1,
     )
     await message.answer(
-        f"âœ… {next_episode}-qism saqlandi.\n"
-        f"â¡ï¸ Endi {next_episode + 1}-qismni yuboring yoki {BTN_SERIAL_DONE} tugmasini bosing.",
+        f"✅ {next_episode}-qism saqlandi.\n"
+        f"➡️ Endi {next_episode + 1}-qismni yuboring yoki {BTN_SERIAL_DONE} tugmasini bosing.",
         reply_markup=serial_upload_kb(),
     )
 
@@ -2940,7 +2940,7 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
         if serial_id:
             db.delete_serial(serial_id)
         await state.clear()
-        await message.answer("âŒ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
         return
 
     if text == "-":
@@ -2959,10 +2959,10 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
                 serial_id=serial_id,
             )
             if delivered or failed:
-                notify_text = f"\nğŸ“£ So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+                notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"âœ… Serial muvaffaqiyatli saqlandi!\nğŸ Jami qismlar: {episodes_added}{notify_text}",
+            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
         return
@@ -2985,7 +2985,7 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(AddSerialState.waiting_publish_channel)
     await message.answer(
-        "ğŸ“£ Endi post joylanadigan kanalni yuboring.\n"
+        "📣 Endi post joylanadigan kanalni yuboring.\n"
         "Format: @kanal_username yoki -1001234567890\n"
         "Kanalga joylamaslik uchun: -",
         reply_markup=cancel_kb(),
@@ -3005,7 +3005,7 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         if serial_id:
             db.delete_serial(serial_id)
         await state.clear()
-        await message.answer("âŒ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi. Serial saqlanmadi.", reply_markup=admin_menu_kb())
         return
 
     data = await state.get_data()
@@ -3019,7 +3019,7 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
 
     if not serial_id:
         await state.clear()
-        await message.answer("âš ï¸ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
 
     if text == "-":
@@ -3042,22 +3042,22 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
                 serial_id=serial_id,
             )
             if delivered or failed:
-                notify_text = f"\nğŸ“£ So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+                notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"âœ… Serial muvaffaqiyatli saqlandi!\nğŸ Jami qismlar: {episodes_added}{notify_text}",
+            f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
         return
 
     channel_ref = normalize_channel_ref_input(text)
     if not channel_ref:
-        await message.answer("âš ï¸ Noto'g'ri kanal formati. Masalan: @kanal_username yoki -1001234567890")
+        await message.answer("⚠️ Noto'g'ri kanal formati. Masalan: @kanal_username yoki -1001234567890")
         return
 
     if not preview_media_type or not preview_file_id:
         await state.clear()
-        await message.answer("âš ï¸ Preview media topilmadi.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Preview media topilmadi.", reply_markup=admin_menu_kb())
         return
 
     try:
@@ -3065,16 +3065,16 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         me = await message.bot.get_me()
         if not me.username:
             await state.clear()
-            await message.answer("âŒ Bot username topilmadi. Deep link yaratib bo'lmadi.", reply_markup=admin_menu_kb())
+            await message.answer("❌ Bot username topilmadi. Deep link yaratib bo'lmadi.", reply_markup=admin_menu_kb())
             return
 
         payload = f"s_{serial_id}"
         deeplink = f"https://t.me/{me.username}?start={payload}"
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="ğŸ“¥ Yuklab olish", url=deeplink)]]
+            inline_keyboard=[[InlineKeyboardButton(text="📥 Yuklab olish", url=deeplink)]]
         )
 
-        caption_lines = [f"ğŸ¬ {title or 'Serial'}"]
+        caption_lines = [f"🎬 {title or 'Serial'}"]
         if description:
             caption_lines.append(description)
         meta = format_meta_line(
@@ -3084,8 +3084,8 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
         )
         if meta:
             caption_lines.append(meta)
-        caption_lines.append(f"ğŸ Jami qismlar: {episodes_added}")
-        caption_lines.append("Tomosha ğŸ‘‡")
+        caption_lines.append(f"🎞 Jami qismlar: {episodes_added}")
+        caption_lines.append("Tomosha 👇")
         caption = "\n\n".join(caption_lines)
 
         await send_media_to_chat(
@@ -3112,15 +3112,15 @@ async def add_serial_publish_channel(message: Message, state: FSMContext) -> Non
             serial_id=serial_id,
         )
         if delivered or failed:
-            notify_text = f"\nğŸ“£ So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+            notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
         await state.clear()
         await message.answer(
-            f"âœ… Serial saqlandi va kanalga joylandi: {chat.title or channel_ref}{notify_text}",
+            f"✅ Serial saqlandi va kanalga joylandi: {chat.title or channel_ref}{notify_text}",
             reply_markup=admin_menu_kb(),
         )
     except (TelegramBadRequest, TelegramForbiddenError, ValueError):
         await message.answer(
-            "âŒ Kanalga joylab bo'lmadi.\n"
+            "❌ Kanalga joylab bo'lmadi.\n"
             "Kanalni tekshiring va botni kanalga admin qiling."
         )
 
@@ -3130,7 +3130,7 @@ async def delete_movie_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(DeleteMovieState.waiting_code)
-    await message.answer("ğŸ—‘ O'chirish uchun kino yoki serial kodini yuboring:", reply_markup=cancel_kb())
+    await message.answer("🗑 O'chirish uchun kino yoki serial kodini yuboring:", reply_markup=cancel_kb())
 
 
 @router.message(DeleteMovieState.waiting_code)
@@ -3141,7 +3141,7 @@ async def delete_movie_finish(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Kod yuboring.")
@@ -3158,11 +3158,11 @@ async def delete_movie_finish(message: Message, state: FSMContext) -> None:
     if deleted_types:
         if len(deleted_types) == 1:
             deleted_name = "Kino" if deleted_types[0] == "kino" else "Serial"
-            await message.answer(f"âœ… {deleted_name} o'chirildi.", reply_markup=admin_menu_kb())
+            await message.answer(f"✅ {deleted_name} o'chirildi.", reply_markup=admin_menu_kb())
         else:
-            await message.answer("âœ… Kino va serial o'chirildi.", reply_markup=admin_menu_kb())
+            await message.answer("✅ Kino va serial o'chirildi.", reply_markup=admin_menu_kb())
     else:
-        await message.answer("âŒ Bu kod bo'yicha kino yoki serial topilmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bu kod bo'yicha kino yoki serial topilmadi.", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_EDIT_CONTENT, "Kontent tahrirlash"}))
@@ -3170,7 +3170,7 @@ async def edit_content_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(EditContentState.waiting_code)
-    await message.answer("âœï¸ Tahrirlash uchun kino yoki serial kodini yuboring:", reply_markup=cancel_kb())
+    await message.answer("✏️ Tahrirlash uchun kino yoki serial kodini yuboring:", reply_markup=cancel_kb())
 
 
 @router.message(EditContentState.waiting_code)
@@ -3181,7 +3181,7 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Kod yuboring.")
@@ -3207,7 +3207,7 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
         )
         await state.set_state(EditContentState.waiting_movie_title)
         await message.answer(
-            "ğŸ¬ Kino topildi.\n"
+            "🎬 Kino topildi.\n"
             f"Joriy nom: {current_title or '-'}\n"
             "Yangi nom yuboring.\n"
             "O'zgartirmaslik uchun: -"
@@ -3229,15 +3229,15 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
         )
         await state.set_state(EditContentState.waiting_serial_episode)
         await message.answer(
-            f"ğŸ“º Serial topildi: {serial_title}\n"
-            f"ğŸ Navbatdagi qism: {next_episode}\n"
+            f"📺 Serial topildi: {serial_title}\n"
+            f"🎞 Navbatdagi qism: {next_episode}\n"
             "Yangi qism media yuboring.\n"
             f"Yakunlash uchun: {BTN_SERIAL_DONE}",
             reply_markup=serial_upload_kb(),
         )
         return
 
-    await message.answer("âŒ Bu kod bo'yicha kino ham serial ham topilmadi.")
+    await message.answer("❌ Bu kod bo'yicha kino ham serial ham topilmadi.")
 
 
 @router.message(EditContentState.waiting_movie_title)
@@ -3248,7 +3248,7 @@ async def edit_movie_title(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Nom bo'sh bo'lmasin yoki o'zgartirmaslik uchun `-` yuboring.")
@@ -3261,7 +3261,7 @@ async def edit_movie_title(message: Message, state: FSMContext) -> None:
     await state.update_data(movie_new_title=new_title)
     await state.set_state(EditContentState.waiting_movie_description)
     await message.answer(
-        f"ğŸ“ Joriy tavsif: {old_description or '-'}\n"
+        f"📝 Joriy tavsif: {old_description or '-'}\n"
         "Yangi tavsif yuboring.\n"
         "O'zgartirmaslik uchun: -"
     )
@@ -3275,7 +3275,7 @@ async def edit_movie_description(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Tavsif bo'sh bo'lmasin yoki o'zgartirmaslik uchun `-` yuboring.")
@@ -3287,7 +3287,7 @@ async def edit_movie_description(message: Message, state: FSMContext) -> None:
     await state.update_data(movie_new_description=new_description)
     await state.set_state(EditContentState.waiting_movie_metadata)
     await message.answer(
-        "ğŸ· Yangi metadata yuboring (format: yil|sifat|janr1,janr2).\n"
+        "🏷 Yangi metadata yuboring (format: yil|sifat|janr1,janr2).\n"
         "Masalan: 2024|1080p|action,drama\n"
         "O'zgartirmaslik uchun: -"
     )
@@ -3301,7 +3301,7 @@ async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     data = await state.get_data()
     old_year = data.get("movie_year")
@@ -3316,7 +3316,7 @@ async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
         metadata = parse_metadata_input(text)
         if metadata is None:
             await message.answer(
-                "âš ï¸ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
+                "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
                 "Masalan: 2024|1080p|action,drama\n"
                 "Yoki: -"
             )
@@ -3332,7 +3332,7 @@ async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(EditContentState.waiting_movie_media)
     await message.answer(
-        "ğŸ Yangi media yuboring (video/document/photo yoki file_id/link).\n"
+        "🎞 Yangi media yuboring (video/document/photo yoki file_id/link).\n"
         "Media o'zgartirilmasin desangiz: -"
     )
 
@@ -3345,14 +3345,14 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     data = await state.get_data()
     code = str(data.get("edit_code") or "").strip()
     if not code:
         await state.clear()
-        await message.answer("âš ï¸ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
 
     if text == "-":
@@ -3385,7 +3385,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     genres = [str(g) for g in data.get("movie_new_genres", data.get("movie_genres", [])) if str(g).strip()]
     if not title or not media_type or not file_id:
         await state.clear()
-        await message.answer("âš ï¸ Tahrirlash uchun ma'lumot yetarli emas.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Tahrirlash uchun ma'lumot yetarli emas.", reply_markup=admin_menu_kb())
         return
 
     updated = db.update_movie(
@@ -3402,9 +3402,9 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     )
     await state.clear()
     if updated:
-        await message.answer("âœ… Kino muvaffaqiyatli yangilandi.", reply_markup=admin_menu_kb())
+        await message.answer("✅ Kino muvaffaqiyatli yangilandi.", reply_markup=admin_menu_kb())
     else:
-        await message.answer("âŒ Kino topilmadi yoki yangilanmadi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Kino topilmadi yoki yangilanmadi.", reply_markup=admin_menu_kb())
 
 
 @router.message(EditContentState.waiting_serial_episode)
@@ -3418,12 +3418,12 @@ async def edit_serial_add_episode(message: Message, state: FSMContext) -> None:
     serial_id = str(data.get("serial_id") or "").strip()
     if not serial_id:
         await state.clear()
-        await message.answer("âš ï¸ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
+        await message.answer("⚠️ Sessiya topilmadi, qaytadan boshlang.", reply_markup=admin_menu_kb())
         return
 
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
 
     episodes_added = int(data.get("episodes_added", 0))
@@ -3431,11 +3431,11 @@ async def edit_serial_add_episode(message: Message, state: FSMContext) -> None:
         await state.clear()
         if episodes_added > 0:
             await message.answer(
-                f"âœ… Serial yangilandi.\nğŸ Qo'shilgan yangi qismlar: {episodes_added}",
+                f"✅ Serial yangilandi.\n🎞 Qo'shilgan yangi qismlar: {episodes_added}",
                 reply_markup=admin_menu_kb(),
             )
         else:
-            await message.answer("â„¹ï¸ Hech qanday yangi qism qo'shilmadi.", reply_markup=admin_menu_kb())
+            await message.answer("ℹ️ Hech qanday yangi qism qo'shilmadi.", reply_markup=admin_menu_kb())
         return
 
     media = parse_message_media(message)
@@ -3454,7 +3454,7 @@ async def edit_serial_add_episode(message: Message, state: FSMContext) -> None:
         next_episode = db.get_next_serial_episode_number(serial_id)
         created = db.add_serial_episode(serial_id, next_episode, media_type, file_id)
     if not created:
-        await message.answer("âš ï¸ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
+        await message.answer("⚠️ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
         return
 
     new_added = episodes_added + 1
@@ -3463,8 +3463,8 @@ async def edit_serial_add_episode(message: Message, state: FSMContext) -> None:
         episodes_added=new_added,
     )
     await message.answer(
-        f"âœ… {next_episode}-qism qo'shildi.\n"
-        f"â¡ï¸ Keyingi qism: {next_episode + 1}\n"
+        f"✅ {next_episode}-qism qo'shildi.\n"
+        f"➡️ Keyingi qism: {next_episode + 1}\n"
         f"Yoki {BTN_SERIAL_DONE} tugmasini bosing.",
         reply_markup=serial_upload_kb(),
     )
@@ -3475,7 +3475,7 @@ async def broadcast_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(BroadcastState.waiting_message)
-    await message.answer("ğŸ“£ Yuboriladigan habarni kiriting:", reply_markup=cancel_kb())
+    await message.answer("📣 Yuboriladigan habarni kiriting:", reply_markup=cancel_kb())
 
 
 @router.message(BroadcastState.waiting_message)
@@ -3486,7 +3486,7 @@ async def broadcast_finish(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text:
         await message.answer("Habar matnini yuboring.")
@@ -3495,10 +3495,10 @@ async def broadcast_finish(message: Message, state: FSMContext) -> None:
     user_ids = db.list_user_ids()
     if not user_ids:
         await state.clear()
-        await message.answer("ğŸ“­ Yuborish uchun foydalanuvchilar topilmadi.", reply_markup=admin_menu_kb())
+        await message.answer("📭 Yuborish uchun foydalanuvchilar topilmadi.", reply_markup=admin_menu_kb())
         return
 
-    await message.answer(f"ğŸ“¤ {len(user_ids)} ta foydalanuvchiga yuborilmoqda...")
+    await message.answer(f"📤 {len(user_ids)} ta foydalanuvchiga yuborilmoqda...")
     success = 0
     failed = 0
 
@@ -3518,7 +3518,7 @@ async def broadcast_finish(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await message.answer(
-        "âœ… Yuborish yakunlandi.\n"
+        "✅ Yuborish yakunlandi.\n"
         f"Yetkazildi: {success}\n"
         f"Yetkazilmadi: {failed}",
         reply_markup=admin_menu_kb(),
@@ -3530,7 +3530,7 @@ async def random_missing_codes(message: Message) -> None:
     if not message.from_user or not guard_admin(message):
         return
     codes = generate_missing_numeric_codes(db.get_all_codes(), 10)
-    lines = ["ğŸ² Bazada yo'q 10 ta random kod:", *[f"â€¢ {code}" for code in codes]]
+    lines = ["🎲 Bazada yo'q 10 ta random kod:", *[f"• {code}" for code in codes]]
     await message.answer("\n".join(lines))
 
 
@@ -3541,11 +3541,11 @@ async def movie_list(message: Message) -> None:
     movies = db.list_movies(limit=None)
     serials = db.list_serials(limit=None)
     if not movies and not serials:
-        await message.answer("ğŸ“­ Kino va serial bazasi hozircha bo'sh.")
+        await message.answer("📭 Kino va serial bazasi hozircha bo'sh.")
         return
 
-    lines: list[str] = ["ğŸ“š Barcha kino va seriallar ro'yxati", ""]
-    lines.append(f"ğŸ¬ Kinolar ({len(movies)}):")
+    lines: list[str] = ["📚 Barcha kino va seriallar ro'yxati", ""]
+    lines.append(f"🎬 Kinolar ({len(movies)}):")
     if movies:
         for item in movies:
             code = item.get("code", "-")
@@ -3558,10 +3558,10 @@ async def movie_list(message: Message) -> None:
             suffix = f" ({meta})" if meta else ""
             lines.append(f"{code} - {title}{suffix}")
     else:
-        lines.append("â€” Kinolar yo'q")
+        lines.append("— Kinolar yo'q")
 
     lines.append("")
-    lines.append(f"ğŸ“º Seriallar ({len(serials)}):")
+    lines.append(f"📺 Seriallar ({len(serials)}):")
     if serials:
         for item in serials:
             code = item.get("code", "-")
@@ -3574,7 +3574,7 @@ async def movie_list(message: Message) -> None:
             suffix = f" ({meta})" if meta else ""
             lines.append(f"{code} - {title}{suffix}")
     else:
-        lines.append("â€” Seriallar yo'q")
+        lines.append("— Seriallar yo'q")
 
     text = "\n".join(lines)
     for chunk in split_text_chunks(text):
@@ -3587,15 +3587,15 @@ async def stats(message: Message) -> None:
         return
     s = db.stats()
     text = (
-        "ğŸ“Š Bot statistikasi:\n"
-        f"ğŸ‘¥ Foydalanuvchilar: {s['users']}\n"
-        f"ğŸ¬ Kinolar: {s['movies']}\n"
-        f"ğŸ“º Seriallar: {s['serials']}\n"
-        f"ğŸ Serial qismlari: {s['serial_episodes']}\n"
-        f"ğŸ“¢ Majburiy kanallar: {s['channels']}\n"
-        f"ğŸ“¥ Kod so'rovlari: {s['requests']}\n"
-        f"ğŸ“ Ochiq kontent so'rovlari: {s['open_content_requests']}\n"
-        f"â­ Sevimlilar: {s['favorites']}"
+        "📊 Bot statistikasi:\n"
+        f"👥 Foydalanuvchilar: {s['users']}\n"
+        f"🎬 Kinolar: {s['movies']}\n"
+        f"📺 Seriallar: {s['serials']}\n"
+        f"🎞 Serial qismlari: {s['serial_episodes']}\n"
+        f"📢 Majburiy kanallar: {s['channels']}\n"
+        f"📥 Kod so'rovlari: {s['requests']}\n"
+        f"📝 Ochiq kontent so'rovlari: {s['open_content_requests']}\n"
+        f"⭐ Sevimlilar: {s['favorites']}"
     )
     await message.answer(text)
 
@@ -3608,8 +3608,8 @@ async def requests_dashboard(message: Message) -> None:
     open_topics = db.list_open_request_topics(limit=20)
     fulfilled_topics = db.list_recent_fulfilled_topics(limit=8)
 
-    lines: list[str] = ["ğŸ“¥ Kontent so'rovlari paneli", ""]
-    lines.append("ğŸ”¥ Ochiq so'rovlar (top):")
+    lines: list[str] = ["📥 Kontent so'rovlari paneli", ""]
+    lines.append("🔥 Ochiq so'rovlar (top):")
     if open_topics:
         for idx, row in enumerate(open_topics, start=1):
             req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
@@ -3618,18 +3618,18 @@ async def requests_dashboard(message: Message) -> None:
             users_count = int(row.get("users_count") or 0)
             lines.append(f"{idx}. [{req_type}] {query} | so'rov: {total} | user: {users_count}")
     else:
-        lines.append("â€” Ochiq so'rovlar yo'q")
+        lines.append("— Ochiq so'rovlar yo'q")
 
     lines.append("")
-    lines.append("âœ… Oxirgi yopilganlar:")
+    lines.append("✅ Oxirgi yopilganlar:")
     if fulfilled_topics:
         for row in fulfilled_topics:
             req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
             query = str(row.get("query_text") or row.get("normalized_query") or "-")
             fulfilled_type = str(row.get("fulfilled_content_type") or "-")
-            lines.append(f"â€¢ [{req_type}] {query} -> {fulfilled_type}")
+            lines.append(f"• [{req_type}] {query} -> {fulfilled_type}")
     else:
-        lines.append("â€” Yaqinda yopilgan so'rov yo'q")
+        lines.append("— Yaqinda yopilgan so'rov yo'q")
 
     for chunk in split_text_chunks("\n".join(lines)):
         await message.answer(chunk)
@@ -3651,7 +3651,7 @@ async def add_admin_finish(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if is_cancel_text(text):
         await state.clear()
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
     if not text.isdigit():
         await message.answer("Faqat raqamli Telegram ID yuboring.")
@@ -3674,8 +3674,8 @@ async def search_by_name_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(SearchState.waiting_query)
     await message.answer(
-        "ğŸ” Qidiriladigan kino/serial nomini yuboring.\n"
-        "Bekor qilish uchun: âŒ Bekor qilish",
+        "🔎 Qidiriladigan kino/serial nomini yuboring.\n"
+        "Bekor qilish uchun: ❌ Bekor qilish",
         reply_markup=cancel_kb(),
     )
 
@@ -3690,7 +3690,7 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
     if is_cancel_text(text):
         await state.clear()
         await message.answer(
-            "âŒ Bekor qilindi.",
+            "❌ Bekor qilindi.",
             reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
         )
         return
@@ -3710,7 +3710,7 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
             pending_request_type="search",
         )
         await message.answer(
-            "ğŸ“­ Qidiruv bo'yicha natija topilmadi.\n"
+            "📭 Qidiruv bo'yicha natija topilmadi.\n"
             "Xohlasangiz, so'rov qoldiring. Kontent qo'shilsa bot sizga yuboradi.",
             reply_markup=build_not_found_request_kb(),
         )
@@ -3719,7 +3719,7 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
     await state.clear()
     kb = build_search_results_kb(results)
     await message.answer(
-        f"âœ… Topildi: {len(results)} ta natija.\nKerakli kontentni tanlang:",
+        f"✅ Topildi: {len(results)} ta natija.\nKerakli kontentni tanlang:",
         reply_markup=kb,
     )
 
@@ -3734,11 +3734,11 @@ async def filter_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(FilterState.waiting_input)
     await message.answer(
-        "ğŸ› Filter formatini yuboring: janrlar|yil|sifat\n"
+        "🎛 Filter formatini yuboring: janrlar|yil|sifat\n"
         "Masalan: action,drama|2024|1080p\n"
         "Keraksiz maydon uchun `-` yozing.\n"
         "Masalan: -|2023|-\n"
-        "Bekor qilish: âŒ Bekor qilish",
+        "Bekor qilish: ❌ Bekor qilish",
         reply_markup=cancel_kb(),
     )
 
@@ -3752,7 +3752,7 @@ async def filter_finish(message: Message, state: FSMContext) -> None:
     if is_cancel_text(text):
         await state.clear()
         await message.answer(
-            "âŒ Bekor qilindi.",
+            "❌ Bekor qilindi.",
             reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
         )
         return
@@ -3760,7 +3760,7 @@ async def filter_finish(message: Message, state: FSMContext) -> None:
     parsed = parse_filter_input(text)
     if parsed is None:
         await message.answer(
-            "âš ï¸ Format noto'g'ri.\n"
+            "⚠️ Format noto'g'ri.\n"
             "To'g'ri format: janrlar|yil|sifat\n"
             "Masalan: action,drama|2024|1080p\n"
             "Yoki: -|2024|-"
@@ -3796,10 +3796,10 @@ async def list_favorites(message: Message) -> None:
         return
     favorites = db.list_favorites(message.from_user.id, limit=100)
     if not favorites:
-        await message.answer("ğŸ“­ Sevimlilar ro'yxati bo'sh.")
+        await message.answer("📭 Sevimlilar ro'yxati bo'sh.")
         return
     await message.answer(
-        f"â­ Sevimlilar ro'yxati ({len(favorites)} ta):",
+        f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
         reply_markup=build_favorites_kb(favorites),
     )
 
@@ -3828,7 +3828,7 @@ async def filter_page(callback: CallbackQuery, state: FSMContext) -> None:
     safe_page = max(0, min(page, total_pages - 1))
     await state.update_data(filter_page=safe_page)
     text = (
-        f"ğŸ› Filter natijalari: {total} ta\n"
+        f"🎛 Filter natijalari: {total} ta\n"
         f"Sahifa: {safe_page + 1}/{total_pages}\n"
         "Kerakli kontentni tanlang:"
     )
@@ -3876,12 +3876,12 @@ async def create_content_request(callback: CallbackQuery, state: FSMContext) -> 
     if callback.message:
         if created:
             await callback.message.answer(
-                "âœ… So'rov qabul qilindi.\n"
+                "✅ So'rov qabul qilindi.\n"
                 "Kontent qo'shilsa sizga avtomatik yuboriladi."
             )
         else:
             await callback.message.answer(
-                f"âœ… So'rov yangilandi (siz bu so'rovni {count} marta yuborgansiz)."
+                f"✅ So'rov yangilandi (siz bu so'rovni {count} marta yuborgansiz)."
             )
     await callback.answer("So'rov saqlandi")
 
@@ -3910,24 +3910,24 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
 
     if action == "add":
         created = db.add_favorite(callback.from_user.id, content_type, content_ref)
-        await callback.answer("â­ Sevimlilarga qo'shildi" if created else "â„¹ï¸ Allaqachon sevimlida")
+        await callback.answer("⭐ Sevimlilarga qo'shildi" if created else "ℹ️ Allaqachon sevimlida")
     else:
         removed = db.remove_favorite(callback.from_user.id, content_type, content_ref)
-        await callback.answer("ğŸ’” Sevimlidan olindi" if removed else "â„¹ï¸ Sevimlida topilmadi")
+        await callback.answer("💔 Sevimlidan olindi" if removed else "ℹ️ Sevimlida topilmadi")
 
     if not callback.message:
         return
 
     current_text = (callback.message.text or "").strip().lower()
-    if current_text.startswith("â­ sevimlilar ro'yxati"):
+    if current_text.startswith("⭐ sevimlilar ro'yxati"):
         favorites = db.list_favorites(callback.from_user.id, limit=100)
         if favorites:
             await callback.message.edit_text(
-                f"â­ Sevimlilar ro'yxati ({len(favorites)} ta):",
+                f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
                 reply_markup=build_favorites_kb(favorites),
             )
         else:
-            await callback.message.edit_text("ğŸ“­ Sevimlilar ro'yxati bo'sh.")
+            await callback.message.edit_text("📭 Sevimlilar ro'yxati bo'sh.")
         return
 
     try:
@@ -3983,7 +3983,7 @@ async def open_content_from_callback(callback: CallbackQuery) -> None:
     ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
     if not ok:
         await callback.message.answer(
-            "â— Avval barcha majburiy kanallarga obuna bo'ling.",
+            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
             reply_markup=build_subscribe_keyboard(channels),
         )
         await callback.answer("Obuna kerak")
@@ -4084,7 +4084,7 @@ async def inline_search(inline_query: InlineQuery) -> None:
 
         result_id = hashlib.sha1(f"{content_type}:{content_id}:{query}".encode("utf-8")).hexdigest()[:32]
         reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="ğŸ“¥ Botda ochish", url=deeplink)]]
+            inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
         )
         preview = resolve_inline_media_preview(item)
         if not preview and content_type == "serial":
@@ -4147,9 +4147,9 @@ async def inline_search(inline_query: InlineQuery) -> None:
 async def cancel_any(message: Message, state: FSMContext) -> None:
     await state.clear()
     if message.from_user and db.is_admin(message.from_user.id):
-        await message.answer("âŒ Bekor qilindi.", reply_markup=admin_menu_kb())
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
     else:
-        await message.answer("âŒ Bekor qilindi.", reply_markup=main_menu_kb(False))
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(False))
 
 
 @router.message(StateFilter(None), F.text)
@@ -4218,7 +4218,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
             sent = await send_movie_by_id(message, str(movie["id"]), message.from_user.id)
             if not sent:
                 db.log_request(message.from_user.id, code, "not_found")
-                await message.answer("âŒ Kino topilmadi.")
+                await message.answer("❌ Kino topilmadi.")
                 return
             data = await state.get_data()
             cleaned = dict(data)
@@ -4229,7 +4229,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         except (TelegramBadRequest, TelegramForbiddenError, ValueError):
             db.log_request(message.from_user.id, code, "send_error")
             await message.answer(
-                "âš ï¸ Media yuborishda xatolik yuz berdi.\nAdmin faylni qayta yuklasin."
+                "⚠️ Media yuborishda xatolik yuz berdi.\nAdmin faylni qayta yuklasin."
             )
         return
 
@@ -4241,7 +4241,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
             pending_request_type="code",
         )
         await message.answer(
-            "âŒ Bunday kod topilmadi.\n"
+            "❌ Bunday kod topilmadi.\n"
             "Xohlasangiz so'rov qoldiring, kontent qo'shilsa bot sizga yuboradi.",
             reply_markup=build_not_found_request_kb(),
         )
@@ -4250,7 +4250,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
     episodes = db.list_serial_episodes(serial["id"])
     if not episodes:
         db.log_request(message.from_user.id, code, "serial_no_episodes")
-        await message.answer("ğŸ“­ Bu serialga hali qism qo'shilmagan.")
+        await message.answer("📭 Bu serialga hali qism qo'shilmagan.")
         return
 
     episode_numbers = [row["episode_number"] for row in episodes]
@@ -4263,7 +4263,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
     await message.answer(
-        f"{serial_caption}\n\nğŸ‘‡ Kerakli qismni tanlang:",
+        f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
         reply_markup=build_serial_episodes_kb(
             serial["id"],
             episode_numbers,
@@ -4279,6 +4279,8 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
 
 
 async def main() -> None:
+    logging.info("Bot polling ishga tushmoqda...")
+    logging.info("WEBAPP_URL: %s", WEBAPP_URL or "(bo'sh)")
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)

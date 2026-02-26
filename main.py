@@ -1959,6 +1959,7 @@ SHORTS_MAX_COUNT = 3
 SHORTS_CLIP_SECONDS = 18.0
 SHORTS_MAX_INPUT_SECONDS = 4 * 60 * 60
 SHORTS_MIN_GAP_SECONDS = 22.0
+SHORTS_MAX_UPLOAD_BYTES = 45 * 1024 * 1024
 SHORTS_SEMAPHORE = asyncio.Semaphore(2)
 
 
@@ -2090,7 +2091,7 @@ def pick_highlight_starts(
 
 
 async def render_short_clip(input_path: str, output_path: str, start_sec: float, clip_sec: float) -> bool:
-    vf = "scale='if(gt(iw,1280),1280,iw)':-2"
+    vf = "scale='if(gt(iw,960),960,iw)':-2"
     cmd = [
         FFMPEG_BIN,
         "-y",
@@ -2105,13 +2106,53 @@ async def render_short_clip(input_path: str, output_path: str, start_sec: float,
         "-c:v",
         "libx264",
         "-preset",
-        "medium",
+        "veryfast",
         "-crf",
-        "20",
+        "24",
+        "-maxrate",
+        "2200k",
+        "-bufsize",
+        "4400k",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
         "aac",
         "-b:a",
-        "160k",
+        "96k",
+        "-movflags",
+        "+faststart",
+        output_path,
+    ]
+    code, _, _ = await run_subprocess(cmd, timeout=240.0)
+    return code == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
+
+
+async def recompress_short_clip_for_telegram(input_path: str, output_path: str) -> bool:
+    # Extra aggressive fallback profile when Telegram rejects size.
+    vf = "scale='if(gt(iw,720),720,iw)':-2"
+    cmd = [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        input_path,
+        "-vf",
+        vf,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "28",
+        "-maxrate",
+        "1200k",
+        "-bufsize",
+        "2400k",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "64k",
         "-movflags",
         "+faststart",
         output_path,
@@ -2161,6 +2202,11 @@ async def generate_movie_shorts(
             output_path = os.path.join(tmp_dir, f"short_{idx}.mp4")
             ok = await render_short_clip(input_path, output_path, start, clip_length)
             if ok:
+                if os.path.getsize(output_path) > SHORTS_MAX_UPLOAD_BYTES:
+                    compact_path = os.path.join(tmp_dir, f"short_{idx}_tg.mp4")
+                    compact_ok = await recompress_short_clip_for_telegram(output_path, compact_path)
+                    if compact_ok and os.path.getsize(compact_path) > 0:
+                        output_path = compact_path
                 outputs.append(output_path)
 
         if not outputs:
@@ -4263,10 +4309,29 @@ async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
     title = str(movie.get("title") or "Kino")
     try:
         for idx, video_path in enumerate(output_paths, start=1):
-            await callback.message.answer_video(
-                video=FSInputFile(video_path),
-                caption=f"🎬 {title}\nInstagram short {idx}/{len(output_paths)}",
-            )
+            try:
+                await callback.message.answer_video(
+                    video=FSInputFile(video_path),
+                    caption=f"🎬 {title}\nInstagram short {idx}/{len(output_paths)}",
+                )
+            except TelegramBadRequest as exc:
+                error_text = str(exc).lower()
+                if "file is too big" not in error_text:
+                    raise
+                fallback_path = os.path.join(
+                    os.path.dirname(video_path),
+                    f"short_{idx}_fallback.mp4",
+                )
+                fallback_ok = await recompress_short_clip_for_telegram(video_path, fallback_path)
+                if not fallback_ok:
+                    await callback.message.answer(
+                        f"❌ Short {idx} yuborilmadi: Telegram limitidan oshdi."
+                    )
+                    continue
+                await callback.message.answer_video(
+                    video=FSInputFile(fallback_path),
+                    caption=f"🎬 {title}\nInstagram short {idx}/{len(output_paths)}",
+                )
     finally:
         if output_paths:
             try:

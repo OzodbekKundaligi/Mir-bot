@@ -13,7 +13,6 @@ Bu bot kino yoki serial kod orqali media beradigan Telegram bot.
 - **Nom bo'yicha qidiruv**, **janr/yil/sifat filter**, **sevimlilar** qo'shilgan.
 - **Inline mode**: `@botusername qidiruv`.
 - Inline'da kod bo'yicha qidiruv, typo-ga yaqin natijalar, yuklashlar soni va kontentning o'zidan olingan preview chiqadi.
-- Kino ostida `Qisqa video kerakmi?` tugmasi bor (1-3 ta highlight short).
 - Admin boshqaruvi `/admin` orqali emas, **`Admin panel`** tugmasi orqali.
 - Bir nechta admin (`ADMIN_IDS`) qo'llab-quvvatlanadi.
 
@@ -25,8 +24,6 @@ python -m venv .venv
 pip install -r requirements.txt
 New-Item .env -ItemType File
 ```
-
-`Qisqa video` funksiyasi uchun serverda `ffmpeg` va `ffprobe` o'rnatilgan bo'lishi kerak.
 
 `.env` ichida:
 
@@ -41,14 +38,44 @@ New-Item .env -ItemType File
 python main.py
 ```
 
-## Railway deploy (ffmpeg bilan)
+## Telegram Web App
 
-Loyihaga `Dockerfile` qo'shildi va unda `ffmpeg` o'rnatiladi. Railway'da:
+Web App alohida papkada:
 
-1. Repo'ni push qiling.
-2. Railway project'da service uchun `Redeploy` qiling (Docker build qayta ishga tushsin).
-3. Environment variables tekshiring: `BOT_TOKEN`, `ADMIN_IDS`, `MONGODB_URI`, `MONGODB_DB`.
-4. Deploy log'da `ffmpeg` install bosqichi o'tganini ko'ring.
+- `webapp/client` - React frontend
+- `webapp/server` - FastAPI backend
+
+Batafsil yo'riqnoma: `webapp/README.md`
+
+Web App funksiyalari:
+
+- Like / dislike
+- Comment
+- Saqlanganlar
+- Yuklab olish tracking
+- Tarix
+- Trendlar
+- O'xshash kontent tavsiyasi
+- Profil statistikasi
+
+## Docker / Procfile
+
+Deploy uchun tayyor fayllar:
+
+- `Procfile`
+- `Procfile.bot`
+- `Procfile.web`
+- `Dockerfile` (bot)
+- `Dockerfile.bot` (bot)
+- `webapp/server/Dockerfile` (API)
+- `webapp/client/Dockerfile` (frontend)
+- `docker-compose.yml` (lokal full stack)
+
+Lokal ishga tushirish:
+
+```powershell
+docker compose up --build
+```
 
 ## SQLite -> MongoDB migratsiya
 

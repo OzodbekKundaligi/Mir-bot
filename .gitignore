@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 .venv/
+webapp/server/.env
+webapp/client/.env
+webapp/client/.env.*
+webapp/client/node_modules/
+webapp/client/dist/

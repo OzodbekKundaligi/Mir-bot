@@ -41,6 +41,15 @@ New-Item .env -ItemType File
 python main.py
 ```
 
+## Railway deploy (ffmpeg bilan)
+
+Loyihaga `Dockerfile` qo'shildi va unda `ffmpeg` o'rnatiladi. Railway'da:
+
+1. Repo'ni push qiling.
+2. Railway project'da service uchun `Redeploy` qiling (Docker build qayta ishga tushsin).
+3. Environment variables tekshiring: `BOT_TOKEN`, `ADMIN_IDS`, `MONGODB_URI`, `MONGODB_DB`.
+4. Deploy log'da `ffmpeg` install bosqichi o'tganini ko'ring.
+
 ## SQLite -> MongoDB migratsiya
 
 Agar eski `kino_bot.db` bo'lsa, MongoDB'ga ko'chirish:

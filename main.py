@@ -2308,7 +2308,7 @@ async def notify_requesters_for_content(
 
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4ww").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", ""))

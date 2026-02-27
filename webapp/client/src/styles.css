@@ -1098,13 +1098,13 @@ video {
   }
 }
 
-@media (max-width: 1200px), (hover: none) and (pointer: coarse) {
+@media (max-width: 1600px), (hover: none), (pointer: coarse), (any-pointer: coarse) {
   .layout {
     grid-template-columns: 1fr;
   }
   .nav {
-    position: fixed;
-    top: auto;
+    position: fixed !important;
+    top: auto !important;
     left: 50%;
     transform: translateX(-50%);
     width: min(620px, calc(100vw - 18px));

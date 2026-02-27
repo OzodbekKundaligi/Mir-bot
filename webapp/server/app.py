@@ -2440,10 +2440,7 @@ async def media_file(
     token: str = Query(default=""),
 ) -> Response:
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
-    user_id = int(user["id"])
-    missing = await _get_missing_channels(user_id)
-    if missing:
-        raise HTTPException(status_code=403, detail="Subscription required.")
+    _ = user
 
     file_path = await _resolve_file_path(file_id)
     if not file_path:
@@ -2475,10 +2472,7 @@ async def media_stream(
     token: str = Query(default=""),
 ) -> Response:
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
-    user_id = int(user["id"])
-    missing = await _get_missing_channels(user_id)
-    if missing:
-        raise HTTPException(status_code=403, detail="Subscription required.")
+    _ = user
 
     file_path = await _resolve_file_path(file_id)
     if not file_path:

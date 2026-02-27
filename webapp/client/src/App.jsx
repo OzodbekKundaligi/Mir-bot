@@ -683,6 +683,7 @@ export default function App() {
 	const heroItem =
 		homeRecommendationFeed.for_you?.[0] || trending[0] || homeRows?.[0] || null
 	const isShortForm = adminForm.content_type === 'short'
+	const simplePlayer = true
 
 	useEffect(() => {
 		const tg = window.Telegram?.WebApp
@@ -1924,84 +1925,87 @@ export default function App() {
 											onError={onWatchVideoError}
 											playsInline
 										/>
-										{gestureHint ? (
+										{!simplePlayer && gestureHint ? (
 											<div className='gesture-overlay'>{gestureHint}</div>
 										) : null}
-										<div className='player-controls'>
-											<div className='player-seek'>
-												<span>{formatDuration(playerTime)}</span>
-												<input
-													type='range'
-													min={0}
-													max={Math.max(1, Math.floor(playerDuration || 0))}
-													value={Math.floor(playerTime || 0)}
-													onChange={e => seekTo(e.target.value)}
-												/>
-												<span>{formatDuration(playerDuration)}</span>
-											</div>
-											<div className='player-control-row'>
-												<button onClick={() => seekBy(-10)}>
-													<SkipBack size={15} />
-												</button>
-												<button
-													className='primary'
-													onClick={() => {
-														const video = videoRef.current
-														if (!video) return
-														if (video.paused) video.play()
-														else video.pause()
-													}}
-												>
-													{videoRef.current?.paused ? (
-														<Play size={15} />
-													) : (
-														<Pause size={15} />
-													)}
-												</button>
-												<button onClick={() => seekBy(10)}>
-													<Forward size={15} />
-												</button>
-												<label className='inline-control'>
-													<Volume2 size={15} />
+										{!simplePlayer ? (
+											<div className='player-controls'>
+												<div className='player-seek'>
+													<span>{formatDuration(playerTime)}</span>
 													<input
 														type='range'
-														min='0'
-														max='1'
-														step='0.01'
-														value={playerVolume}
-														onChange={e => {
-															const next = Number(e.target.value || 0)
-															setPlayerVolume(next)
-															if (videoRef.current)
-																videoRef.current.volume = next
-														}}
+														min={0}
+														max={Math.max(1, Math.floor(playerDuration || 0))}
+														value={Math.floor(playerTime || 0)}
+														onChange={e => seekTo(e.target.value)}
 													/>
-												</label>
-												<select
-													value={playerRate}
-													onChange={e => {
-														const next = Number(e.target.value || 1)
-														setPlayerRate(next)
-														if (videoRef.current)
-															videoRef.current.playbackRate = next
-													}}
-												>
-													<option value='0.75'>0.75x</option>
-													<option value='1'>1x</option>
-													<option value='1.25'>1.25x</option>
-													<option value='1.5'>1.5x</option>
-													<option value='2'>2x</option>
-												</select>
-												<button onClick={toggleFullscreen}>
-													<Fullscreen size={15} />
-												</button>
+													<span>{formatDuration(playerDuration)}</span>
+												</div>
+												<div className='player-control-row'>
+													<button onClick={() => seekBy(-10)}>
+														<SkipBack size={15} />
+													</button>
+													<button
+														className='primary'
+														onClick={() => {
+															const video = videoRef.current
+															if (!video) return
+															if (video.paused) video.play()
+															else video.pause()
+														}}
+													>
+														{videoRef.current?.paused ? (
+															<Play size={15} />
+														) : (
+															<Pause size={15} />
+														)}
+													</button>
+													<button onClick={() => seekBy(10)}>
+														<Forward size={15} />
+													</button>
+													<label className='inline-control'>
+														<Volume2 size={15} />
+														<input
+															type='range'
+															min='0'
+															max='1'
+															step='0.01'
+															value={playerVolume}
+															onChange={e => {
+																const next = Number(e.target.value || 0)
+																setPlayerVolume(next)
+																if (videoRef.current)
+																	videoRef.current.volume = next
+															}}
+														/>
+													</label>
+													<select
+														value={playerRate}
+														onChange={e => {
+															const next = Number(e.target.value || 1)
+															setPlayerRate(next)
+															if (videoRef.current)
+																videoRef.current.playbackRate = next
+														}}
+													>
+														<option value='0.75'>0.75x</option>
+														<option value='1'>1x</option>
+														<option value='1.25'>1.25x</option>
+														<option value='1.5'>1.5x</option>
+														<option value='2'>2x</option>
+													</select>
+													<button onClick={toggleFullscreen}>
+														<Fullscreen size={15} />
+													</button>
+												</div>
 											</div>
-										</div>
+										) : null}
 									</div>
 								) : (
 									<div className='panel'>Bu format webda ko'rsatilmaydi</div>
 								)}
-								<div className='watch-meta panel'>
+								{!simplePlayer ? (
+									<div className='watch-meta panel'>
 									<div className='mini-row'>
 										<span>{watch.item?.code || '-'}</span>
 										<span>{watch.item?.year || '-'}</span>
@@ -2013,8 +2017,10 @@ export default function App() {
 										limit={DESCRIPTION_LIMIT_WATCH}
 										className='watch-desc'
 									/>
-								</div>
-								<div className='watch-actions'>
+									</div>
+								) : null}
+								{!simplePlayer ? (
+									<div className='watch-actions'>
 									<button
 										className={
 											watch.item?.user_reaction === 'like' ? 'active' : ''
@@ -2036,7 +2042,8 @@ export default function App() {
 									<button onClick={() => onShare(watch.item)}>
 										<Share2 size={15} />
 									</button>
-								</div>
+									</div>
+								) : null}
 								{watch.episodes?.length ? (
 									<div className='episode-row'>
 										{watch.episodes.map(ep => (
@@ -2055,7 +2062,8 @@ export default function App() {
 									</div>
 								) : null}
 							</section>
-							<aside>
+							{!simplePlayer ? (
+								<aside>
 								<h4>Izohlar</h4>
 								<div className='comment-write'>
 									<textarea
@@ -2246,7 +2254,8 @@ export default function App() {
 										<div className='empty-block'>Tavsiyalar topilmadi.</div>
 									)}
 								</div>
-							</aside>
+								</aside>
+							) : null}
 						</div>
 					</div>
 				</section>

@@ -126,13 +126,45 @@ function clamp(value, min, max) {
 	return Math.min(max, Math.max(min, value))
 }
 
-function isPhotoMediaType(value) {
-	const media = String(value || '')
-		.trim()
-		.toLowerCase()
-	if (!media) return false
-	if (media.startsWith('image/')) return true
-	return media === 'photo' || media === 'image' || media === 'sticker'
+function uniqueNonEmpty(values) {
+	const out = []
+	const seen = new Set()
+	for (const value of values) {
+		const item = String(value || '').trim()
+		if (!item || seen.has(item)) continue
+		seen.add(item)
+		out.push(item)
+	}
+	return out
+}
+
+function isHttpUrl(value) {
+	const text = String(value || '').trim().toLowerCase()
+	return text.startsWith('http://') || text.startsWith('https://')
+}
+
+function buildPosterSource(fileId, initData, mediaToken) {
+	const fileRef = String(fileId || '').trim()
+	if (!fileRef) return ''
+	if (isHttpUrl(fileRef)) return fileRef
+	return buildMediaUrl(fileRef, initData, mediaToken)
+}
+
+function buildPlayableSources(fileId, initData, mediaToken) {
+	const fileRef = String(fileId || '').trim()
+	if (!fileRef) return []
+	if (isHttpUrl(fileRef)) return [fileRef]
+	const init = String(initData || '').trim()
+	const token = String(mediaToken || '').trim()
+	if (!init && !token) return []
+	const sources = []
+	if (token) {
+		sources.push(buildStreamUrl(fileRef, init, token))
+		sources.push(buildMediaUrl(fileRef, init, token))
+	}
+	sources.push(buildStreamUrl(fileRef, init, ''))
+	sources.push(buildMediaUrl(fileRef, init, ''))
+	return uniqueNonEmpty(sources)
 }
 
 function sortContentRows(items, sortMode) {
@@ -297,21 +329,17 @@ function Card({
 	onShare,
 }) {
 	const img = item.preview_file_id
-		? buildMediaUrl(item.preview_file_id, initData, mediaToken)
+		? buildPosterSource(item.preview_file_id, initData, mediaToken)
 		: ''
 	const [hovered, setHovered] = useState(false)
 	const [imageFailed, setImageFailed] = useState(false)
 	const [previewFailed, setPreviewFailed] = useState(false)
-	const canPreview = Boolean(
-		item.file_id && initData && !isPhotoMediaType(item.media_type),
+	const previewSources = useMemo(
+		() => buildPlayableSources(item.file_id, initData, mediaToken),
+		[item.file_id, initData, mediaToken],
 	)
-	const streamPreviewUrl = canPreview
-		? buildStreamUrl(item.file_id, initData, mediaToken)
-		: ''
-	const previewFallbackUrl = canPreview
-		? buildMediaUrl(item.file_id, initData, mediaToken)
-		: ''
-	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
+	const [previewIndex, setPreviewIndex] = useState(0)
+	const previewSrc = previewSources[previewIndex] || ''
 	const showImage = Boolean(img && !imageFailed)
 	const showStaticPreview = Boolean(!showImage && previewSrc && !previewFailed)
 	const genreLabel = (item.genres || []).slice(0, 2).join(', ')
@@ -319,12 +347,12 @@ function Card({
 	useEffect(() => {
 		setImageFailed(false)
 		setPreviewFailed(false)
-		setPreviewSrc(streamPreviewUrl)
-	}, [img, streamPreviewUrl, item.id, item.content_type])
+		setPreviewIndex(0)
+	}, [img, item.id, item.content_type, previewSources.length])
 
 	function onPreviewError() {
-		if (previewFallbackUrl && previewSrc && previewSrc !== previewFallbackUrl) {
-			setPreviewSrc(previewFallbackUrl)
+		if (previewIndex < previewSources.length - 1) {
+			setPreviewIndex(v => v + 1)
 			return
 		}
 		setPreviewFailed(true)
@@ -425,18 +453,14 @@ function Card({
 function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 	const safeItem = item || {}
 	const poster = safeItem.preview_file_id
-		? buildMediaUrl(safeItem.preview_file_id, initData, mediaToken)
+		? buildPosterSource(safeItem.preview_file_id, initData, mediaToken)
 		: ''
-	const canPreview = Boolean(
-		safeItem.file_id && initData && !isPhotoMediaType(safeItem.media_type),
+	const previewSources = useMemo(
+		() => buildPlayableSources(safeItem.file_id, initData, mediaToken),
+		[safeItem.file_id, initData, mediaToken],
 	)
-	const streamPreviewUrl = canPreview
-		? buildStreamUrl(safeItem.file_id, initData, mediaToken)
-		: ''
-	const previewFallbackUrl = canPreview
-		? buildMediaUrl(safeItem.file_id, initData, mediaToken)
-		: ''
-	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
+	const [previewIndex, setPreviewIndex] = useState(0)
+	const previewSrc = previewSources[previewIndex] || ''
 	const [previewFailed, setPreviewFailed] = useState(false)
 	const shortDescription = String(safeItem.description || '')
 		.slice(0, 240)
@@ -444,13 +468,13 @@ function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 	const genres = (safeItem.genres || []).slice(0, 3)
 
 	useEffect(() => {
-		setPreviewSrc(streamPreviewUrl)
+		setPreviewIndex(0)
 		setPreviewFailed(false)
-	}, [streamPreviewUrl, safeItem.id, safeItem.content_type])
+	}, [safeItem.id, safeItem.content_type, previewSources.length])
 
 	function onPreviewError() {
-		if (previewFallbackUrl && previewSrc && previewSrc !== previewFallbackUrl) {
-			setPreviewSrc(previewFallbackUrl)
+		if (previewIndex < previewSources.length - 1) {
+			setPreviewIndex(v => v + 1)
 			return
 		}
 		setPreviewFailed(true)
@@ -511,29 +535,25 @@ function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 
 function ShortCard({ item, initData, mediaToken, onWatch }) {
 	const poster = item.preview_file_id
-		? buildMediaUrl(item.preview_file_id, initData, mediaToken)
+		? buildPosterSource(item.preview_file_id, initData, mediaToken)
 		: ''
-	const canStream = Boolean(
-		item.file_id && initData && !isPhotoMediaType(item.media_type),
+	const previewSources = useMemo(
+		() => buildPlayableSources(item.file_id, initData, mediaToken),
+		[item.file_id, initData, mediaToken],
 	)
-	const streamUrl = canStream
-		? buildStreamUrl(item.file_id, initData, mediaToken)
-		: ''
-	const fallbackUrl = canStream
-		? buildMediaUrl(item.file_id, initData, mediaToken)
-		: ''
-	const [src, setSrc] = useState(streamUrl)
+	const [previewIndex, setPreviewIndex] = useState(0)
+	const src = previewSources[previewIndex] || ''
 	const [failed, setFailed] = useState(false)
 	const desc = String(item.description || '').trim()
 
 	useEffect(() => {
-		setSrc(streamUrl)
+		setPreviewIndex(0)
 		setFailed(false)
-	}, [streamUrl, item.id])
+	}, [item.id, previewSources.length])
 
 	function onMediaError() {
-		if (fallbackUrl && src && src !== fallbackUrl) {
-			setSrc(fallbackUrl)
+		if (previewIndex < previewSources.length - 1) {
+			setPreviewIndex(v => v + 1)
 			return
 		}
 		setFailed(true)
@@ -595,7 +615,8 @@ export default function App() {
 	const [watch, setWatch] = useState(null)
 	const [watchOpen, setWatchOpen] = useState(false)
 	const [watchUrl, setWatchUrl] = useState('')
-	const [watchFallbackUrl, setWatchFallbackUrl] = useState('')
+	const [watchSources, setWatchSources] = useState([])
+	const [watchSourceIndex, setWatchSourceIndex] = useState(0)
 	const [comments, setComments] = useState([])
 	const [commentText, setCommentText] = useState('')
 	const [commentSort, setCommentSort] = useState('new')
@@ -785,7 +806,8 @@ export default function App() {
 			setMiniPlayer({
 				watch,
 				url: watchUrl,
-				fallbackUrl: watchFallbackUrl,
+				sources: watchSources,
+				sourceIndex: watchSourceIndex,
 				episode: watch.current_episode,
 				position: Math.floor(video.currentTime || 0),
 				volume: Number(video.volume || 1),
@@ -793,7 +815,8 @@ export default function App() {
 			})
 		}
 		setWatchOpen(false)
-		setWatchFallbackUrl('')
+		setWatchSources([])
+		setWatchSourceIndex(0)
 	}
 
 	function applyPlayerValues() {
@@ -814,12 +837,16 @@ export default function App() {
 	}
 
 	function onWatchVideoError() {
-		if (watchFallbackUrl && watchUrl && watchUrl !== watchFallbackUrl) {
-			setWatchUrl(watchFallbackUrl)
-			showFlash("Asosiy stream ishlamadi, fallbackga o'tildi")
+		if (watchSourceIndex < watchSources.length - 1) {
+			const nextIndex = watchSourceIndex + 1
+			setWatchSourceIndex(nextIndex)
+			setWatchUrl(watchSources[nextIndex] || '')
+			showFlash(
+				`Video manbasi almashtirildi (${nextIndex + 1}/${watchSources.length})`,
+			)
 			return
 		}
-		showFlash('Video ochilmadi, boshqa kontentni sinab ko‘ring')
+		showFlash('Video ochilmadi. Admindan file_id ni tekshirish kerak')
 	}
 
 	function seekBy(delta) {
@@ -1053,16 +1080,16 @@ export default function App() {
 			recommendationTask,
 		])
 		await loadComments(item.content_type, item.id, commentSort)
-			setWatch(w)
 		const streamFileId = String(w.stream_file_id || '').trim()
-		const usePhotoOnly = isPhotoMediaType(w.media_type)
-		if (streamFileId && !usePhotoOnly) {
-			setWatchUrl(buildStreamUrl(streamFileId, initData, mediaToken))
-			setWatchFallbackUrl(buildMediaUrl(streamFileId, initData, mediaToken))
-		} else {
-			setWatchUrl('')
-			setWatchFallbackUrl('')
+		if (!streamFileId) {
+			showFlash("Bu kontentda video manzili yo'q")
+			return
 		}
+		setWatch(w)
+		const sources = buildPlayableSources(streamFileId, initData, mediaToken)
+		setWatchSources(sources)
+		setWatchSourceIndex(0)
+		setWatchUrl(sources[0] || '')
 		setRecommendations(rec.items || [])
 		setRecommendationFeed(
 			rec.feed || {
@@ -1085,11 +1112,8 @@ export default function App() {
 		)
 		setPlayerVolume(clamp(Number(options.volume ?? 1), 0, 1))
 		setPlayerRate(clamp(Number(options.rate ?? 1), 0.5, 2))
-			setWatchOpen(true)
-			setMiniPlayer(null)
-			if (!streamFileId) {
-				showFlash("Bu kontentda video manzili yo'q")
-			}
+		setWatchOpen(true)
+		setMiniPlayer(null)
 	}
 
 	async function onProgress() {
@@ -1879,11 +1903,13 @@ export default function App() {
 						<header className='player-head'>
 							<h2>{watch.item?.title}</h2>
 							<div className='player-head-actions'>
-								<button onClick={() => closeWatch(true)}>Mini</button>
+								{!simplePlayer ? (
+									<button onClick={() => closeWatch(true)}>Mini</button>
+								) : null}
 								<button onClick={() => closeWatch(false)}>Yopish</button>
 							</div>
 						</header>
-						<div className='player-grid'>
+						<div className={`player-grid ${simplePlayer ? 'player-grid-simple' : ''}`}>
 							<section>
 								{watchUrl ? (
 									<div
@@ -1899,7 +1925,7 @@ export default function App() {
 											src={watchUrl}
 											poster={
 												watch.item?.preview_file_id
-													? buildMediaUrl(
+													? buildPosterSource(
 															watch.item.preview_file_id,
 															initData,
 															mediaToken,
@@ -2006,42 +2032,44 @@ export default function App() {
 								)}
 								{!simplePlayer ? (
 									<div className='watch-meta panel'>
-									<div className='mini-row'>
-										<span>{watch.item?.code || '-'}</span>
-										<span>{watch.item?.year || '-'}</span>
-										<span>{watch.item?.quality || '-'}</span>
-										<span>{(watch.item?.genres || []).join(', ') || '-'}</span>
-									</div>
-									<ExpandableText
-										text={watch.item?.description}
-										limit={DESCRIPTION_LIMIT_WATCH}
-										className='watch-desc'
-									/>
+										<div className='mini-row'>
+											<span>{watch.item?.code || '-'}</span>
+											<span>{watch.item?.year || '-'}</span>
+											<span>{watch.item?.quality || '-'}</span>
+											<span>
+												{(watch.item?.genres || []).join(', ') || '-'}
+											</span>
+										</div>
+										<ExpandableText
+											text={watch.item?.description}
+											limit={DESCRIPTION_LIMIT_WATCH}
+											className='watch-desc'
+										/>
 									</div>
 								) : null}
 								{!simplePlayer ? (
 									<div className='watch-actions'>
-									<button
-										className={
-											watch.item?.user_reaction === 'like' ? 'active' : ''
-										}
-										onClick={() => toggleContentReaction('like')}
-									>
-										<ThumbsUp size={15} />
-										{watch.item?.likes || 0}
-									</button>
-									<button
-										className={
-											watch.item?.user_reaction === 'dislike' ? 'active' : ''
-										}
-										onClick={() => toggleContentReaction('dislike')}
-									>
-										<ThumbsDown size={15} />
-										{watch.item?.dislikes || 0}
-									</button>
-									<button onClick={() => onShare(watch.item)}>
-										<Share2 size={15} />
-									</button>
+										<button
+											className={
+												watch.item?.user_reaction === 'like' ? 'active' : ''
+											}
+											onClick={() => toggleContentReaction('like')}
+										>
+											<ThumbsUp size={15} />
+											{watch.item?.likes || 0}
+										</button>
+										<button
+											className={
+												watch.item?.user_reaction === 'dislike' ? 'active' : ''
+											}
+											onClick={() => toggleContentReaction('dislike')}
+										>
+											<ThumbsDown size={15} />
+											{watch.item?.dislikes || 0}
+										</button>
+										<button onClick={() => onShare(watch.item)}>
+											<Share2 size={15} />
+										</button>
 									</div>
 								) : null}
 								{watch.episodes?.length ? (
@@ -2064,203 +2092,208 @@ export default function App() {
 							</section>
 							{!simplePlayer ? (
 								<aside>
-								<h4>Izohlar</h4>
-								<div className='comment-write'>
-									<textarea
-										value={commentText}
-										onChange={e => setCommentText(e.target.value)}
-									/>
-									<button onClick={sendMainComment}>
-										<Send size={14} />
-									</button>
-								</div>
-								<select
-									value={commentSort}
-									onChange={async e => {
-										setCommentSort(e.target.value)
-										await loadComments(
-											watch.item.content_type,
-											watch.item.id,
-											e.target.value,
-										)
-									}}
-								>
-									<option value='new'>Yangi</option>
-									<option value='top'>Top</option>
-									<option value='old'>Eski</option>
-								</select>
-								<div className='comment-list'>
-									{comments.length ? (
-										comments.map(c => (
-											<div key={c.id} className='comment-thread'>
-												<div className='comment-item'>
-													<div className='comment-main'>
-														<strong>{c.full_name}</strong>
-														<small>{formatRelativeTime(c.created_at)}</small>
-														<p>{c.text}</p>
-														<div className='comment-actions'>
-															<button
-																className={
-																	c.user_reaction === 'like' ? 'active' : ''
-																}
-																onClick={() =>
-																	onCommentReaction(
-																		c.id,
-																		c.user_reaction,
-																		'like',
-																	)
-																}
-															>
-																<ThumbsUp size={12} /> {c.likes || 0}
-															</button>
-															<button
-																className={
-																	c.user_reaction === 'dislike' ? 'active' : ''
-																}
-																onClick={() =>
-																	onCommentReaction(
-																		c.id,
-																		c.user_reaction,
-																		'dislike',
-																	)
-																}
-															>
-																<ThumbsDown size={12} /> {c.dislikes || 0}
-															</button>
-															<button
-																onClick={() =>
-																	setReplyTarget(
-																		replyTarget === c.id ? '' : c.id,
-																	)
-																}
-															>
-																<Reply size={12} />
-															</button>
-															{c.can_delete ||
-															Number(c.user_tg_id || 0) ===
-																Number(boot?.user?.id || 0) ||
-															isAdmin ? (
-																<button onClick={() => removeComment(c.id)}>
-																	<Trash2 size={12} />
+									<h4>Izohlar</h4>
+									<div className='comment-write'>
+										<textarea
+											value={commentText}
+											onChange={e => setCommentText(e.target.value)}
+										/>
+										<button onClick={sendMainComment}>
+											<Send size={14} />
+										</button>
+									</div>
+									<select
+										value={commentSort}
+										onChange={async e => {
+											setCommentSort(e.target.value)
+											await loadComments(
+												watch.item.content_type,
+												watch.item.id,
+												e.target.value,
+											)
+										}}
+									>
+										<option value='new'>Yangi</option>
+										<option value='top'>Top</option>
+										<option value='old'>Eski</option>
+									</select>
+									<div className='comment-list'>
+										{comments.length ? (
+											comments.map(c => (
+												<div key={c.id} className='comment-thread'>
+													<div className='comment-item'>
+														<div className='comment-main'>
+															<strong>{c.full_name}</strong>
+															<small>{formatRelativeTime(c.created_at)}</small>
+															<p>{c.text}</p>
+															<div className='comment-actions'>
+																<button
+																	className={
+																		c.user_reaction === 'like' ? 'active' : ''
+																	}
+																	onClick={() =>
+																		onCommentReaction(
+																			c.id,
+																			c.user_reaction,
+																			'like',
+																		)
+																	}
+																>
+																	<ThumbsUp size={12} /> {c.likes || 0}
 																</button>
-															) : null}
+																<button
+																	className={
+																		c.user_reaction === 'dislike'
+																			? 'active'
+																			: ''
+																	}
+																	onClick={() =>
+																		onCommentReaction(
+																			c.id,
+																			c.user_reaction,
+																			'dislike',
+																		)
+																	}
+																>
+																	<ThumbsDown size={12} /> {c.dislikes || 0}
+																</button>
+																<button
+																	onClick={() =>
+																		setReplyTarget(
+																			replyTarget === c.id ? '' : c.id,
+																		)
+																	}
+																>
+																	<Reply size={12} />
+																</button>
+																{c.can_delete ||
+																Number(c.user_tg_id || 0) ===
+																	Number(boot?.user?.id || 0) ||
+																isAdmin ? (
+																	<button onClick={() => removeComment(c.id)}>
+																		<Trash2 size={12} />
+																	</button>
+																) : null}
+															</div>
 														</div>
 													</div>
-												</div>
-												{replyTarget === c.id ? (
-													<div className='reply-box'>
-														<textarea
-															value={replyText}
-															onChange={e => setReplyText(e.target.value)}
-															placeholder='Javob yozing...'
-														/>
-														<button onClick={sendReply}>
-															<Send size={12} />
-														</button>
-													</div>
-												) : null}
-												{(c.replies || []).length ? (
-													<div className='reply-list'>
-														{c.replies.map(reply => (
-															<div
-																key={reply.id}
-																className='comment-item reply-item'
-															>
-																<div className='comment-main'>
-																	<strong>{reply.full_name}</strong>
-																	<small>
-																		{formatRelativeTime(reply.created_at)}
-																	</small>
-																	<p>{reply.text}</p>
-																	<div className='comment-actions'>
-																		<button
-																			className={
-																				reply.user_reaction === 'like'
-																					? 'active'
-																					: ''
-																			}
-																			onClick={() =>
-																				onCommentReaction(
-																					reply.id,
-																					reply.user_reaction,
-																					'like',
-																				)
-																			}
-																		>
-																			<ThumbsUp size={11} /> {reply.likes || 0}
-																		</button>
-																		<button
-																			className={
-																				reply.user_reaction === 'dislike'
-																					? 'active'
-																					: ''
-																			}
-																			onClick={() =>
-																				onCommentReaction(
-																					reply.id,
-																					reply.user_reaction,
-																					'dislike',
-																				)
-																			}
-																		>
-																			<ThumbsDown size={11} />{' '}
-																			{reply.dislikes || 0}
-																		</button>
-																		{reply.can_delete ||
-																		Number(reply.user_tg_id || 0) ===
-																			Number(boot?.user?.id || 0) ||
-																		isAdmin ? (
+													{replyTarget === c.id ? (
+														<div className='reply-box'>
+															<textarea
+																value={replyText}
+																onChange={e => setReplyText(e.target.value)}
+																placeholder='Javob yozing...'
+															/>
+															<button onClick={sendReply}>
+																<Send size={12} />
+															</button>
+														</div>
+													) : null}
+													{(c.replies || []).length ? (
+														<div className='reply-list'>
+															{c.replies.map(reply => (
+																<div
+																	key={reply.id}
+																	className='comment-item reply-item'
+																>
+																	<div className='comment-main'>
+																		<strong>{reply.full_name}</strong>
+																		<small>
+																			{formatRelativeTime(reply.created_at)}
+																		</small>
+																		<p>{reply.text}</p>
+																		<div className='comment-actions'>
 																			<button
-																				onClick={() => removeComment(reply.id)}
+																				className={
+																					reply.user_reaction === 'like'
+																						? 'active'
+																						: ''
+																				}
+																				onClick={() =>
+																					onCommentReaction(
+																						reply.id,
+																						reply.user_reaction,
+																						'like',
+																					)
+																				}
 																			>
-																				<Trash2 size={11} />
+																				<ThumbsUp size={11} />{' '}
+																				{reply.likes || 0}
 																			</button>
-																		) : null}
+																			<button
+																				className={
+																					reply.user_reaction === 'dislike'
+																						? 'active'
+																						: ''
+																				}
+																				onClick={() =>
+																					onCommentReaction(
+																						reply.id,
+																						reply.user_reaction,
+																						'dislike',
+																					)
+																				}
+																			>
+																				<ThumbsDown size={11} />{' '}
+																				{reply.dislikes || 0}
+																			</button>
+																			{reply.can_delete ||
+																			Number(reply.user_tg_id || 0) ===
+																				Number(boot?.user?.id || 0) ||
+																			isAdmin ? (
+																				<button
+																					onClick={() =>
+																						removeComment(reply.id)
+																					}
+																				>
+																					<Trash2 size={11} />
+																				</button>
+																			) : null}
+																		</div>
 																	</div>
 																</div>
-															</div>
-														))}
-													</div>
-												) : null}
+															))}
+														</div>
+													) : null}
+												</div>
+											))
+										) : (
+											<div className='empty-block'>
+												Hozircha izohlar yo'q. Birinchi bo'lib yozing.
 											</div>
-										))
-									) : (
-										<div className='empty-block'>
-											Hozircha izohlar yo'q. Birinchi bo'lib yozing.
-										</div>
-									)}
-								</div>
-								<h4>Tavsiyalar</h4>
-								<div className='recommend-list'>
-									{recommendationFeed.similar?.length ? (
-										recommendationFeed.similar.map(r => (
-											<button
-												key={`${r.content_type}:${r.id}`}
-												onClick={() => onWatch(r)}
-											>
-												{r.title}
-											</button>
-										))
-									) : recommendations.length ? (
-										recommendations.map(r => (
-											<button
-												key={`${r.content_type}:${r.id}`}
-												onClick={() => onWatch(r)}
-											>
-												{r.title}
-											</button>
-										))
-									) : (
-										<div className='empty-block'>Tavsiyalar topilmadi.</div>
-									)}
-								</div>
+										)}
+									</div>
+									<h4>Tavsiyalar</h4>
+									<div className='recommend-list'>
+										{recommendationFeed.similar?.length ? (
+											recommendationFeed.similar.map(r => (
+												<button
+													key={`${r.content_type}:${r.id}`}
+													onClick={() => onWatch(r)}
+												>
+													{r.title}
+												</button>
+											))
+										) : recommendations.length ? (
+											recommendations.map(r => (
+												<button
+													key={`${r.content_type}:${r.id}`}
+													onClick={() => onWatch(r)}
+												>
+													{r.title}
+												</button>
+											))
+										) : (
+											<div className='empty-block'>Tavsiyalar topilmadi.</div>
+										)}
+									</div>
 								</aside>
 							) : null}
 						</div>
 					</div>
 				</section>
 			) : null}
-			{miniPlayer ? (
+			{miniPlayer && !simplePlayer ? (
 				<section className='mini-player'>
 					<header>
 						<strong>{miniPlayer.watch?.item?.title || 'Mini player'}</strong>
@@ -2277,8 +2310,15 @@ export default function App() {
 						onError={() => {
 							setMiniPlayer(prev => {
 								if (!prev) return prev
-								if (prev.fallbackUrl && prev.url !== prev.fallbackUrl) {
-									return { ...prev, url: prev.fallbackUrl }
+								const list = Array.isArray(prev.sources) ? prev.sources : []
+								const idx = Number(prev.sourceIndex || 0)
+								if (idx < list.length - 1) {
+									const nextIndex = idx + 1
+									return {
+										...prev,
+										sourceIndex: nextIndex,
+										url: String(list[nextIndex] || prev.url),
+									}
 								}
 								return prev
 							})

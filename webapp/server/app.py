@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlparse
 
 import httpx
 from bson import ObjectId
@@ -263,6 +263,58 @@ def _is_active(doc: dict[str, Any] | None) -> bool:
     return bool(doc.get("is_active", True))
 
 
+def _first_non_empty_str(doc: dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = str(doc.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _is_http_url(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _extract_content_file_ref(doc: dict[str, Any]) -> str:
+    return _first_non_empty_str(
+        doc,
+        [
+            "file_id",
+            "stream_file_id",
+            "video_file_id",
+            "media_file_id",
+            "telegram_file_id",
+            "source_file_id",
+            "video_url",
+            "stream_url",
+            "file_url",
+            "url",
+        ],
+    )
+
+
+def _extract_media_type(doc: dict[str, Any]) -> str:
+    media_type = _first_non_empty_str(
+        doc,
+        [
+            "media_type",
+            "mime_type",
+            "file_mime_type",
+            "content_type",
+        ],
+    )
+    if media_type:
+        return media_type
+    file_ref = _extract_content_file_ref(doc)
+    if not file_ref:
+        return ""
+    guessed = _guess_media_type(file_ref, fallback="")
+    if guessed:
+        return guessed
+    return "video"
+
+
 def _is_video_media_type(media_type: str) -> bool:
     value = (media_type or "").strip().lower()
     if not value:
@@ -292,16 +344,24 @@ def _is_video_media_type(media_type: str) -> bool:
 
 
 def _extract_preview_photo_file_id(content_type: str, doc: dict[str, Any]) -> str:
-    preview_photo = str(doc.get("preview_photo_file_id") or "")
+    preview_photo = _first_non_empty_str(
+        doc,
+        [
+            "preview_photo_file_id",
+            "poster_file_id",
+            "cover_file_id",
+            "thumbnail_file_id",
+            "thumb_file_id",
+        ],
+    )
     if preview_photo:
         return preview_photo
-    preview_media_type = str(doc.get("preview_media_type") or "")
-    preview_file_id = str(doc.get("preview_file_id") or "")
-    if preview_media_type == "photo" and preview_file_id:
+    preview_file_id = _first_non_empty_str(doc, ["preview_file_id", "poster_id", "preview_id"])
+    if preview_file_id:
         return preview_file_id
     if content_type == "movie":
-        media_type = str(doc.get("media_type") or "")
-        file_id = str(doc.get("file_id") or "")
+        media_type = _extract_media_type(doc)
+        file_id = _extract_content_file_ref(doc)
         if media_type == "photo" and file_id:
             return file_id
     return ""
@@ -317,8 +377,8 @@ def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str
         payload = f"sh_{content_id}"
     deep_link = f"https://t.me/{bot_username}?start={payload}" if bot_username else ""
     preview_file_id = _extract_preview_photo_file_id(content_type, doc)
-    media_type = str(doc.get("media_type") or "")
-    file_id = str(doc.get("file_id") or "")
+    media_type = _extract_media_type(doc)
+    file_id = _extract_content_file_ref(doc)
     if content_type == "serial" and not file_id:
         serial_preview_file_id, serial_preview_media_type = _serial_preview_stream(content_id)
         if serial_preview_file_id:
@@ -382,7 +442,11 @@ def _safe_object_id(value: str) -> ObjectId | None:
 
 
 def _guess_media_type(file_path: str, fallback: str = "application/octet-stream") -> str:
-    guessed, _ = mimetypes.guess_type(str(file_path or "").strip())
+    value = str(file_path or "").strip()
+    if _is_http_url(value):
+        parsed = urlparse(value)
+        value = parsed.path or value
+    guessed, _ = mimetypes.guess_type(value)
     if guessed:
         return guessed
     return fallback
@@ -401,12 +465,32 @@ def _serial_preview_stream(serial_id: str) -> tuple[str, str]:
     if not oid:
         return "", ""
     doc = serial_episodes_col.find_one(
-        {"serial_id": oid, "file_id": {"$exists": True, "$ne": ""}},
-        {"file_id": 1, "media_type": 1},
+        {
+            "serial_id": oid,
+            "$or": [
+                {"file_id": {"$exists": True, "$ne": ""}},
+                {"stream_file_id": {"$exists": True, "$ne": ""}},
+                {"video_file_id": {"$exists": True, "$ne": ""}},
+                {"media_file_id": {"$exists": True, "$ne": ""}},
+                {"video_url": {"$exists": True, "$ne": ""}},
+                {"stream_url": {"$exists": True, "$ne": ""}},
+            ],
+        },
+        {
+            "file_id": 1,
+            "stream_file_id": 1,
+            "video_file_id": 1,
+            "media_file_id": 1,
+            "video_url": 1,
+            "stream_url": 1,
+            "media_type": 1,
+            "mime_type": 1,
+            "file_mime_type": 1,
+        },
         sort=[("episode_number", 1)],
     ) or {}
-    file_id = str(doc.get("file_id") or "")
-    media_type = str(doc.get("media_type") or "video")
+    file_id = _extract_content_file_ref(doc)
+    media_type = _extract_media_type(doc) or "video"
     _SERIAL_PREVIEW_CACHE[serial_ref] = (
         file_id,
         media_type,
@@ -432,6 +516,18 @@ async def _resolve_file_path(file_id: str) -> str:
             now_ts + FILE_PATH_CACHE_TTL_SECONDS,
         )
     return file_path
+
+
+async def _resolve_media_source(file_ref: str) -> tuple[str, str]:
+    safe_ref = str(file_ref or "").strip()
+    if not safe_ref:
+        return "", ""
+    if _is_http_url(safe_ref):
+        return safe_ref, safe_ref
+    file_path = await _resolve_file_path(safe_ref)
+    if not file_path:
+        return "", ""
+    return f"{TELEGRAM_FILE_BASE}/{file_path}", file_path
 
 
 def _get_content_doc(content_type: str, content_ref: str, include_inactive: bool = False) -> dict[str, Any] | None:
@@ -775,12 +871,14 @@ def _list_recent_history(user_tg_id: int, bot_username: str | None, limit: int =
 
 
 def _serialize_episode(doc: dict[str, Any]) -> dict[str, Any]:
+    file_id = _extract_content_file_ref(doc)
+    media_type = _extract_media_type(doc)
     return {
         "id": str(doc.get("_id") or ""),
         "episode_number": int(doc.get("episode_number") or 0),
-        "media_type": str(doc.get("media_type") or ""),
-        "file_id": str(doc.get("file_id") or ""),
-        "is_video": _is_video_media_type(str(doc.get("media_type") or "")),
+        "media_type": media_type,
+        "file_id": file_id,
+        "is_video": _is_video_media_type(media_type),
     }
 
 
@@ -791,7 +889,21 @@ def _list_serial_episodes(serial_ref: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for doc in serial_episodes_col.find(
         {"serial_id": serial_oid},
-        {"episode_number": 1, "media_type": 1, "file_id": 1},
+        {
+            "episode_number": 1,
+            "media_type": 1,
+            "mime_type": 1,
+            "file_mime_type": 1,
+            "file_id": 1,
+            "stream_file_id": 1,
+            "video_file_id": 1,
+            "media_file_id": 1,
+            "telegram_file_id": 1,
+            "video_url": 1,
+            "stream_url": 1,
+            "file_url": 1,
+            "url": 1,
+        },
     ).sort("episode_number", 1):
         rows.append(_serialize_episode(doc))
     return rows
@@ -1821,8 +1933,8 @@ async def watch_info(
     _track_history_view(user_id, content_type_safe, content_ref)
 
     if content_type_safe in {"movie", "short"}:
-        file_id = str(doc.get("file_id") or "")
-        media_type = str(doc.get("media_type") or "")
+        file_id = _extract_content_file_ref(doc)
+        media_type = _extract_media_type(doc)
         if not file_id:
             raise HTTPException(status_code=404, detail="Video file not found.")
         progress = _get_watch_progress(user_id, content_type_safe, content_ref, None)
@@ -1846,7 +1958,13 @@ async def watch_info(
                 chosen = row
                 break
     if not chosen:
-        chosen = episodes[0]
+        chosen = next(
+            (row for row in episodes if str(row.get("file_id") or "").strip()),
+            episodes[0],
+        )
+    chosen_file_id = str(chosen.get("file_id") or "").strip()
+    if not chosen_file_id:
+        raise HTTPException(status_code=404, detail="Episode video file not found.")
 
     progress = _get_watch_progress(user_id, content_type_safe, content_ref, int(chosen["episode_number"]))
     return {
@@ -1854,7 +1972,7 @@ async def watch_info(
         "current_episode": int(chosen["episode_number"]),
         "episodes": episodes,
         "playback": progress,
-        "stream_file_id": str(chosen["file_id"]),
+        "stream_file_id": chosen_file_id,
         "media_type": str(chosen.get("media_type") or ""),
         "is_video": bool(chosen.get("is_video")),
     }
@@ -2442,18 +2560,17 @@ async def media_file(
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     _ = user
 
-    file_path = await _resolve_file_path(file_id)
-    if not file_path:
+    source_url, media_ref = await _resolve_media_source(file_id)
+    if not source_url:
         raise HTTPException(status_code=404, detail="File not found.")
 
-    url = f"{TELEGRAM_FILE_BASE}/{file_path}"
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as session:
-        resp = await session.get(url)
+        resp = await session.get(source_url)
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Cannot download file from Telegram.")
+        raise HTTPException(status_code=502, detail=f"Cannot download media ({resp.status_code}).")
     media_type = resp.headers.get("content-type") or ""
     if not media_type or media_type == "application/octet-stream":
-        media_type = _guess_media_type(file_path, fallback="application/octet-stream")
+        media_type = _guess_media_type(media_ref, fallback="application/octet-stream")
     return Response(
         content=resp.content,
         media_type=media_type,
@@ -2474,8 +2591,8 @@ async def media_stream(
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     _ = user
 
-    file_path = await _resolve_file_path(file_id)
-    if not file_path:
+    source_url, media_ref = await _resolve_media_source(file_id)
+    if not source_url:
         raise HTTPException(status_code=404, detail="File not found.")
 
     upstream_headers: dict[str, str] = {}
@@ -2483,14 +2600,13 @@ async def media_stream(
     if range_header:
         upstream_headers["Range"] = range_header
 
-    url = f"{TELEGRAM_FILE_BASE}/{file_path}"
     session = httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True)
-    request_obj = session.build_request("GET", url, headers=upstream_headers)
+    request_obj = session.build_request("GET", source_url, headers=upstream_headers)
     resp = await session.send(request_obj, stream=True)
 
     if resp.status_code not in {200, 206}:
         await _close_http_stream(resp, session)
-        raise HTTPException(status_code=502, detail=f"Cannot stream file from Telegram ({resp.status_code}).")
+        raise HTTPException(status_code=502, detail=f"Cannot stream media ({resp.status_code}).")
 
     response_headers: dict[str, str] = {}
     for key in ("content-length", "content-range", "accept-ranges", "cache-control", "etag", "last-modified"):
@@ -2505,7 +2621,7 @@ async def media_stream(
 
     media_type = resp.headers.get("content-type") or ""
     if not media_type or media_type == "application/octet-stream":
-        media_type = _guess_media_type(file_path, fallback="application/octet-stream")
+        media_type = _guess_media_type(media_ref, fallback="application/octet-stream")
     return StreamingResponse(
         resp.aiter_bytes(chunk_size=1024 * 256),
         status_code=resp.status_code,

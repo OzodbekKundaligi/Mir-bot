@@ -668,6 +668,17 @@ a {
   gap: 12px;
 }
 
+.player-grid.player-grid-simple {
+  grid-template-columns: 1fr;
+}
+
+.player-wrap video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+}
+
 video {
   width: 100%;
   border-radius: 14px;
@@ -1098,7 +1109,7 @@ video {
   }
 }
 
-@media (max-width: 1600px), (hover: none), (pointer: coarse), (any-pointer: coarse) {
+@media (max-width: 980px), (hover: none), (pointer: coarse), (any-pointer: coarse) {
   .layout {
     grid-template-columns: 1fr;
   }

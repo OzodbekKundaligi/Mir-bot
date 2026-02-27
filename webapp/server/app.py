@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import time
@@ -334,6 +335,13 @@ def _safe_object_id(value: str) -> ObjectId | None:
         return ObjectId(value)
     except Exception:
         return None
+
+
+def _guess_media_type(file_path: str, fallback: str = "application/octet-stream") -> str:
+    guessed, _ = mimetypes.guess_type(str(file_path or "").strip())
+    if guessed:
+        return guessed
+    return fallback
 
 
 def _serial_preview_stream(serial_id: str) -> tuple[str, str]:
@@ -2279,11 +2287,16 @@ async def media_file(
         resp = await session.get(url)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail="Cannot download file from Telegram.")
-    media_type = resp.headers.get("content-type") or "application/octet-stream"
+    media_type = resp.headers.get("content-type") or ""
+    if not media_type or media_type == "application/octet-stream":
+        media_type = _guess_media_type(file_path, fallback="application/octet-stream")
     return Response(
         content=resp.content,
         media_type=media_type,
-        headers={"cache-control": "public, max-age=300"},
+        headers={
+            "cache-control": "public, max-age=300",
+            "content-disposition": "inline",
+        },
     )
 
 
@@ -2327,7 +2340,9 @@ async def media_stream(
     if "cache-control" not in response_headers:
         response_headers["cache-control"] = "public, max-age=300"
 
-    media_type = resp.headers.get("content-type") or "application/octet-stream"
+    media_type = resp.headers.get("content-type") or ""
+    if not media_type or media_type == "application/octet-stream":
+        media_type = _guess_media_type(file_path, fallback="application/octet-stream")
     return StreamingResponse(
         resp.aiter_bytes(chunk_size=1024 * 256),
         status_code=resp.status_code,

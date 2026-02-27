@@ -67,14 +67,20 @@ const DESCRIPTION_LIMIT_WATCH = 280
 
 function parseInitialViewState() {
 	const params = new URLSearchParams(window.location.search)
-	const rawTab = String(params.get('tab') || '').trim().toLowerCase()
+	const rawTab = String(params.get('tab') || '')
+		.trim()
+		.toLowerCase()
 	const tab = Object.values(T).includes(rawTab) ? rawTab : T.HOME
-	const contentTypeRaw = String(params.get('type') || '').trim().toLowerCase()
+	const contentTypeRaw = String(params.get('type') || '')
+		.trim()
+		.toLowerCase()
 	const contentType =
 		contentTypeRaw === 'movie' || contentTypeRaw === 'serial'
 			? contentTypeRaw
 			: 'all'
-	const sortRaw = String(params.get('sort') || '').trim().toLowerCase()
+	const sortRaw = String(params.get('sort') || '')
+		.trim()
+		.toLowerCase()
 	const sortMode =
 		sortRaw === 'popular' || sortRaw === 'liked' || sortRaw === 'new'
 			? sortRaw
@@ -109,7 +115,8 @@ function formatDuration(secondsValue) {
 	const h = Math.floor(total / 3600)
 	const m = Math.floor((total % 3600) / 60)
 	const s = total % 60
-	if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+	if (h > 0)
+		return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 	return `${m}:${String(s).padStart(2, '0')}`
 }
 
@@ -273,9 +280,19 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 		? buildMediaUrl(item.preview_file_id, initData)
 		: ''
 	const [hovered, setHovered] = useState(false)
+	const [imageFailed, setImageFailed] = useState(false)
+	const [previewFailed, setPreviewFailed] = useState(false)
 	const canPreview = Boolean(item.is_video && item.file_id && initData)
 	const previewUrl = canPreview ? buildStreamUrl(item.file_id, initData) : ''
+	const showImage = Boolean(img && !imageFailed)
+	const showStaticPreview = Boolean(!showImage && previewUrl && !previewFailed)
 	const genreLabel = (item.genres || []).slice(0, 2).join(', ')
+
+	useEffect(() => {
+		setImageFailed(false)
+		setPreviewFailed(false)
+	}, [img, previewUrl, item.id, item.content_type])
+
 	return (
 		<article className='card'>
 			<button
@@ -286,9 +303,15 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 				onBlur={() => setHovered(false)}
 				onClick={() => onWatch(item)}
 			>
-				{img ? (
-					<img src={img} alt={item.title} loading='lazy' decoding='async' />
-				) : previewUrl ? (
+				{showImage ? (
+					<img
+						src={img}
+						alt={item.title}
+						loading='lazy'
+						decoding='async'
+						onError={() => setImageFailed(true)}
+					/>
+				) : showStaticPreview ? (
 					<video
 						className='poster-preview-static'
 						src={previewUrl}
@@ -297,11 +320,12 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 						loop
 						playsInline
 						preload='metadata'
+						onError={() => setPreviewFailed(true)}
 					/>
 				) : (
 					<div className='poster-empty'>No Preview</div>
 				)}
-				{hovered && previewUrl ? (
+				{hovered && previewUrl && !previewFailed ? (
 					<video
 						className='poster-preview'
 						src={previewUrl}
@@ -310,6 +334,7 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 						loop
 						playsInline
 						preload='metadata'
+						onError={() => setPreviewFailed(true)}
 					/>
 				) : null}
 				<span className='play-chip'>
@@ -357,6 +382,62 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 				</div>
 			</div>
 		</article>
+	)
+}
+
+function HeroBanner({ item, initData, onWatch, onShare }) {
+	if (!item) return null
+	const poster = item.preview_file_id
+		? buildMediaUrl(item.preview_file_id, initData)
+		: ''
+	const canPreview = Boolean(item.is_video && item.file_id && initData)
+	const previewUrl = canPreview ? buildStreamUrl(item.file_id, initData) : ''
+	const shortDescription = String(item.description || '')
+		.slice(0, 240)
+		.trim()
+	const genres = (item.genres || []).slice(0, 3)
+	return (
+		<section className='hero-banner'>
+			<div className='hero-media'>
+				{previewUrl ? (
+					<video
+						src={previewUrl}
+						muted
+						autoPlay
+						loop
+						playsInline
+						preload='metadata'
+						poster={poster}
+					/>
+				) : poster ? (
+					<img src={poster} alt={item.title} loading='lazy' decoding='async' />
+				) : (
+					<div className='poster-empty'>No Preview</div>
+				)}
+			</div>
+			<div className='hero-overlay'>
+				<div className='hero-content'>
+					<span className='hero-kicker'>MirTopKino Premium</span>
+					<h2>{item.title || "Noma'lum"}</h2>
+					{shortDescription ? <p>{shortDescription}</p> : null}
+					<div className='hero-meta'>
+						<span>{item.year || '-'}</span>
+						<span>{item.quality || '-'}</span>
+						{genres.length ? <span>{genres.join(' | ')}</span> : null}
+					</div>
+					<div className='hero-actions'>
+						<button className='primary' onClick={() => onWatch(item)}>
+							<Play size={16} />
+							Tomosha
+						</button>
+						<button onClick={() => onShare(item)}>
+							<Share2 size={16} />
+							Ulashish
+						</button>
+					</div>
+				</div>
+			</div>
+		</section>
 	)
 }
 
@@ -420,12 +501,15 @@ export default function App() {
 	const [playerVolume, setPlayerVolume] = useState(1)
 	const [playerRate, setPlayerRate] = useState(1)
 	const [pendingStartTime, setPendingStartTime] = useState(0)
+	const [gestureHint, setGestureHint] = useState('')
 	const videoRef = useRef(null)
 	const miniVideoRef = useRef(null)
 	const playerWrapRef = useRef(null)
 	const progressRef = useRef(0)
 	const flashTimerRef = useRef(0)
 	const touchStartXRef = useRef(null)
+	const touchSeekPreviewRef = useRef(0)
+	const gestureTimerRef = useRef(0)
 	const blocked = Boolean(boot?.blocked)
 	const isAdmin = Boolean(boot?.user?.is_admin)
 	const favoriteMap = useMemo(
@@ -463,6 +547,8 @@ export default function App() {
 					)
 		return sortContentRows(byGenre, sortMode)
 	}, [content, genreFilter, sortMode])
+	const heroItem =
+		homeRecommendationFeed.for_you?.[0] || trending[0] || homeRows?.[0] || null
 
 	useEffect(() => {
 		const tg = window.Telegram?.WebApp
@@ -486,6 +572,9 @@ export default function App() {
 		return () => {
 			if (flashTimerRef.current) {
 				window.clearTimeout(flashTimerRef.current)
+			}
+			if (gestureTimerRef.current) {
+				window.clearTimeout(gestureTimerRef.current)
 			}
 		}
 	}, [])
@@ -519,6 +608,14 @@ export default function App() {
 		flashTimerRef.current = window.setTimeout(() => {
 			setFlash('')
 		}, 2400)
+	}
+
+	function showGestureHint(text, holdMs = 700) {
+		setGestureHint(text)
+		if (gestureTimerRef.current) window.clearTimeout(gestureTimerRef.current)
+		gestureTimerRef.current = window.setTimeout(() => {
+			setGestureHint('')
+		}, holdMs)
 	}
 
 	function patchRows(item, summary = {}) {
@@ -580,21 +677,50 @@ export default function App() {
 	function seekBy(delta) {
 		const video = videoRef.current
 		if (!video) return
-		const next = clamp(Number(video.currentTime || 0) + delta, 0, Number(video.duration || 0))
+		const next = clamp(
+			Number(video.currentTime || 0) + delta,
+			0,
+			Number(video.duration || 0),
+		)
 		video.currentTime = next
 		setPlayerTime(next)
+		const rounded = Math.round(delta)
+		if (rounded !== 0) {
+			showGestureHint(`${rounded > 0 ? '+' : ''}${rounded}s`)
+		}
 	}
 
 	function seekTo(value) {
 		const video = videoRef.current
 		if (!video) return
-		const next = clamp(Number(value || 0), 0, Number(video.duration || playerDuration || 0))
+		const next = clamp(
+			Number(value || 0),
+			0,
+			Number(video.duration || playerDuration || 0),
+		)
 		video.currentTime = next
 		setPlayerTime(next)
 	}
 
 	function onTouchStart(e) {
 		touchStartXRef.current = e.touches?.[0]?.clientX ?? null
+		touchSeekPreviewRef.current = 0
+	}
+
+	function onTouchMove(e) {
+		if (touchStartXRef.current === null) return
+		const currentX = e.touches?.[0]?.clientX ?? touchStartXRef.current
+		const deltaX = currentX - touchStartXRef.current
+		if (Math.abs(deltaX) < 26) {
+			touchSeekPreviewRef.current = 0
+			return
+		}
+		const seconds = clamp(Math.round(Math.abs(deltaX) / 24) * 2, 2, 40)
+		touchSeekPreviewRef.current = deltaX > 0 ? -seconds : seconds
+		showGestureHint(
+			`${touchSeekPreviewRef.current > 0 ? '+' : ''}${touchSeekPreviewRef.current}s`,
+			220,
+		)
 	}
 
 	function onTouchEnd(e) {
@@ -602,14 +728,25 @@ export default function App() {
 		const endX = e.changedTouches?.[0]?.clientX ?? touchStartXRef.current
 		const delta = endX - touchStartXRef.current
 		touchStartXRef.current = null
-		if (Math.abs(delta) < 44) return
+		const previewSeek = Number(touchSeekPreviewRef.current || 0)
+		touchSeekPreviewRef.current = 0
+		if (Math.abs(delta) < 44 && !previewSeek) return
+		if (previewSeek) {
+			seekBy(previewSeek)
+			return
+		}
 		if (delta > 0) seekBy(-10)
 		else seekBy(10)
 	}
 
 	async function load() {
-		if (!initData) return
+		if (!initData) {
+			setLoading(false)
+			setError('WebAppni bot ichidan oching yoki init_data ni yangilang.')
+			return
+		}
 		setLoading(true)
+		setError('')
 		try {
 			const data = await fetchBootstrap(initData)
 			setBoot(data)
@@ -663,7 +800,10 @@ export default function App() {
 				if (v.paused) v.play()
 				else v.pause()
 			} else if (key === 'arrowright' || key === 'l') {
-				v.currentTime = Math.min(Number(v.duration || 0), Number(v.currentTime || 0) + 10)
+				v.currentTime = Math.min(
+					Number(v.duration || 0),
+					Number(v.currentTime || 0) + 10,
+				)
 			} else if (key === 'arrowleft' || key === 'j') {
 				v.currentTime = Math.max(0, Number(v.currentTime || 0) - 10)
 			} else if (key === 'm') {
@@ -770,7 +910,9 @@ export default function App() {
 				: Number(w.playback?.position_seconds || 0)
 		setPendingStartTime(Math.max(0, Math.floor(resumeFrom)))
 		setPlayerTime(Math.max(0, Math.floor(resumeFrom)))
-		setPlayerDuration(Math.max(0, Math.floor(w.playback?.duration_seconds || 0)))
+		setPlayerDuration(
+			Math.max(0, Math.floor(w.playback?.duration_seconds || 0)),
+		)
 		setPlayerVolume(clamp(Number(options.volume ?? 1), 0, 1))
 		setPlayerRate(clamp(Number(options.rate ?? 1), 0.5, 2))
 		setWatchOpen(true)
@@ -1070,6 +1212,12 @@ export default function App() {
 					<section className='main'>
 						{tab === T.HOME ? (
 							<>
+								<HeroBanner
+									item={heroItem}
+									initData={initData}
+									onWatch={onWatch}
+									onShare={onShare}
+								/>
 								<section className='panel'>
 									<h2 className='title-with-icon'>
 										<Flame size={16} />
@@ -1150,10 +1298,7 @@ export default function App() {
 														}`}
 														className='continue-item'
 														onClick={() =>
-															onWatch(
-																item,
-																progress.episode_number ?? null,
-															)
+															onWatch(item, progress.episode_number ?? null)
 														}
 													>
 														<strong>{item.title || "Noma'lum"}</strong>
@@ -1272,7 +1417,10 @@ export default function App() {
 										label='Foydalanuvchi'
 										value={boot?.user?.full_name || 'Foydalanuvchi'}
 									/>
-									<ProfileStat label='Telegram ID' value={boot?.user?.id || '-'} />
+									<ProfileStat
+										label='Telegram ID'
+										value={boot?.user?.id || '-'}
+									/>
 									<ProfileStat
 										label="Ko'rilgan"
 										value={profileStats.watched ?? 0}
@@ -1362,42 +1510,60 @@ export default function App() {
 											placeholder='Title'
 											value={adminForm.title}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, title: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													title: e.target.value,
+												}))
 											}
 										/>
 										<input
 											placeholder='Code'
 											value={adminForm.code}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, code: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													code: e.target.value,
+												}))
 											}
 										/>
 										<input
 											placeholder='Year'
 											value={adminForm.year}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, year: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													year: e.target.value,
+												}))
 											}
 										/>
 										<input
 											placeholder='Quality'
 											value={adminForm.quality}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, quality: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													quality: e.target.value,
+												}))
 											}
 										/>
 										<input
 											placeholder='Genres: Action,Drama'
 											value={adminForm.genres}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, genres: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													genres: e.target.value,
+												}))
 											}
 										/>
 										<input
 											placeholder='Video file_id'
 											value={adminForm.file_id}
 											onChange={e =>
-												setAdminForm(prev => ({ ...prev, file_id: e.target.value }))
+												setAdminForm(prev => ({
+													...prev,
+													file_id: e.target.value,
+												}))
 											}
 										/>
 										<input
@@ -1459,7 +1625,8 @@ export default function App() {
 												<div>
 													<strong>{x.title}</strong>
 													<small>
-														{x.content_type} / {x.code || '-'} / {x.episodes_count || 0} ep
+														{x.content_type} / {x.code || '-'} /{' '}
+														{x.episodes_count || 0} ep
 													</small>
 												</div>
 												<button
@@ -1471,7 +1638,8 @@ export default function App() {
 															isActive: !x.is_active,
 														})
 														setAdminRows(
-															(await fetchAdminContent({ initData })).items || [],
+															(await fetchAdminContent({ initData })).items ||
+																[],
 														)
 														await load()
 													}}
@@ -1507,11 +1675,18 @@ export default function App() {
 										className='player-wrap'
 										ref={playerWrapRef}
 										onTouchStart={onTouchStart}
+										onTouchMove={onTouchMove}
 										onTouchEnd={onTouchEnd}
+										onTouchCancel={onTouchEnd}
 									>
 										<video
 											ref={videoRef}
 											src={watchUrl}
+											poster={
+												watch.item?.preview_file_id
+													? buildMediaUrl(watch.item.preview_file_id, initData)
+													: ''
+											}
 											controls
 											autoPlay
 											onLoadedMetadata={() => {
@@ -1520,7 +1695,9 @@ export default function App() {
 													videoRef.current.currentTime = clamp(
 														pendingStartTime,
 														0,
-														Number(videoRef.current.duration || pendingStartTime),
+														Number(
+															videoRef.current.duration || pendingStartTime,
+														),
 													)
 													setPendingStartTime(0)
 												}
@@ -1528,6 +1705,9 @@ export default function App() {
 											onTimeUpdate={onProgress}
 											playsInline
 										/>
+										{gestureHint ? (
+											<div className='gesture-overlay'>{gestureHint}</div>
+										) : null}
 										<div className='player-controls'>
 											<div className='player-seek'>
 												<span>{formatDuration(playerTime)}</span>
@@ -1573,7 +1753,8 @@ export default function App() {
 														onChange={e => {
 															const next = Number(e.target.value || 0)
 															setPlayerVolume(next)
-															if (videoRef.current) videoRef.current.volume = next
+															if (videoRef.current)
+																videoRef.current.volume = next
 														}}
 													/>
 												</label>
@@ -1582,7 +1763,8 @@ export default function App() {
 													onChange={e => {
 														const next = Number(e.target.value || 1)
 														setPlayerRate(next)
-														if (videoRef.current) videoRef.current.playbackRate = next
+														if (videoRef.current)
+															videoRef.current.playbackRate = next
 													}}
 												>
 													<option value='0.75'>0.75x</option>
@@ -1615,14 +1797,18 @@ export default function App() {
 								</div>
 								<div className='watch-actions'>
 									<button
-										className={watch.item?.user_reaction === 'like' ? 'active' : ''}
+										className={
+											watch.item?.user_reaction === 'like' ? 'active' : ''
+										}
 										onClick={() => toggleContentReaction('like')}
 									>
 										<ThumbsUp size={15} />
 										{watch.item?.likes || 0}
 									</button>
 									<button
-										className={watch.item?.user_reaction === 'dislike' ? 'active' : ''}
+										className={
+											watch.item?.user_reaction === 'dislike' ? 'active' : ''
+										}
 										onClick={() => toggleContentReaction('dislike')}
 									>
 										<ThumbsDown size={15} />
@@ -1691,7 +1877,11 @@ export default function App() {
 																	c.user_reaction === 'like' ? 'active' : ''
 																}
 																onClick={() =>
-																	onCommentReaction(c.id, c.user_reaction, 'like')
+																	onCommentReaction(
+																		c.id,
+																		c.user_reaction,
+																		'like',
+																	)
 																}
 															>
 																<ThumbsUp size={12} /> {c.likes || 0}
@@ -1701,14 +1891,20 @@ export default function App() {
 																	c.user_reaction === 'dislike' ? 'active' : ''
 																}
 																onClick={() =>
-																	onCommentReaction(c.id, c.user_reaction, 'dislike')
+																	onCommentReaction(
+																		c.id,
+																		c.user_reaction,
+																		'dislike',
+																	)
 																}
 															>
 																<ThumbsDown size={12} /> {c.dislikes || 0}
 															</button>
 															<button
 																onClick={() =>
-																	setReplyTarget(replyTarget === c.id ? '' : c.id)
+																	setReplyTarget(
+																		replyTarget === c.id ? '' : c.id,
+																	)
 																}
 															>
 																<Reply size={12} />
@@ -1739,15 +1935,22 @@ export default function App() {
 												{(c.replies || []).length ? (
 													<div className='reply-list'>
 														{c.replies.map(reply => (
-															<div key={reply.id} className='comment-item reply-item'>
+															<div
+																key={reply.id}
+																className='comment-item reply-item'
+															>
 																<div className='comment-main'>
 																	<strong>{reply.full_name}</strong>
-																	<small>{formatRelativeTime(reply.created_at)}</small>
+																	<small>
+																		{formatRelativeTime(reply.created_at)}
+																	</small>
 																	<p>{reply.text}</p>
 																	<div className='comment-actions'>
 																		<button
 																			className={
-																				reply.user_reaction === 'like' ? 'active' : ''
+																				reply.user_reaction === 'like'
+																					? 'active'
+																					: ''
 																			}
 																			onClick={() =>
 																				onCommentReaction(
@@ -1773,13 +1976,16 @@ export default function App() {
 																				)
 																			}
 																		>
-																			<ThumbsDown size={11} /> {reply.dislikes || 0}
+																			<ThumbsDown size={11} />{' '}
+																			{reply.dislikes || 0}
 																		</button>
 																		{reply.can_delete ||
 																		Number(reply.user_tg_id || 0) ===
 																			Number(boot?.user?.id || 0) ||
 																		isAdmin ? (
-																			<button onClick={() => removeComment(reply.id)}>
+																			<button
+																				onClick={() => removeComment(reply.id)}
+																			>
 																				<Trash2 size={11} />
 																			</button>
 																		) : null}
@@ -1848,18 +2054,24 @@ export default function App() {
 								Number(miniVideoRef.current.duration || 0),
 							)
 							miniVideoRef.current.volume = clamp(miniPlayer.volume || 1, 0, 1)
-							miniVideoRef.current.playbackRate = clamp(miniPlayer.rate || 1, 0.5, 2)
+							miniVideoRef.current.playbackRate = clamp(
+								miniPlayer.rate || 1,
+								0.5,
+								2,
+							)
 						}}
 						onTimeUpdate={() => {
 							if (!miniVideoRef.current) return
 							setMiniPlayer(prev =>
 								prev
 									? {
-										...prev,
-										position: Math.floor(miniVideoRef.current.currentTime || 0),
-										volume: Number(miniVideoRef.current.volume || 1),
-										rate: Number(miniVideoRef.current.playbackRate || 1),
-									}
+											...prev,
+											position: Math.floor(
+												miniVideoRef.current.currentTime || 0,
+											),
+											volume: Number(miniVideoRef.current.volume || 1),
+											rate: Number(miniVideoRef.current.playbackRate || 1),
+										}
 									: prev,
 							)
 						}}
@@ -1869,3 +2081,4 @@ export default function App() {
 		</main>
 	)
 }
+

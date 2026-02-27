@@ -1,23 +1,25 @@
 :root {
-  --bg: #0b1118;
-  --card: #131c28;
-  --card-2: #182436;
-  --line: #26384f;
-  --text: #eaf3ff;
-  --muted: #8ea3be;
-  --brand: #19c6a6;
-  --brand-2: #ff8f42;
+  --bg: #0f1013;
+  --card: #17191f;
+  --card-2: #20232b;
+  --line: #2f343e;
+  --text: #f3f5f9;
+  --muted: #9aa4b5;
+  --brand: #ff2e5f;
+  --brand-2: #ff7a2f;
+  --surface: #12141a;
 }
 
 [data-theme="light"] {
-  --bg: #eef3f9;
+  --bg: #f4f6fb;
   --card: #ffffff;
-  --card-2: #f5f8fd;
-  --line: #d3deeb;
-  --text: #0f1a29;
-  --muted: #5d6f86;
-  --brand: #00a98a;
-  --brand-2: #ff7a22;
+  --card-2: #f1f4fa;
+  --line: #d4dcea;
+  --text: #131722;
+  --muted: #647087;
+  --brand: #e12852;
+  --brand-2: #ff7a2f;
+  --surface: #ffffff;
 }
 
 * {
@@ -29,22 +31,27 @@ body,
 #root {
   margin: 0;
   min-height: 100%;
-  background: radial-gradient(circle at top right, #17314d 0, transparent 40%), var(--bg);
+  background:
+    radial-gradient(circle at 8% 0%, #ff335522 0, transparent 42%),
+    radial-gradient(circle at 92% 0%, #ff7a2f20 0, transparent 38%),
+    var(--bg);
   color: var(--text);
   font-family: "Manrope", sans-serif;
 }
 
 .yt-page {
   min-height: 100vh;
-  padding: 12px;
+  padding: 14px;
+  max-width: 1540px;
+  margin: 0 auto;
 }
 
 .yt-header {
   display: grid;
-  grid-template-columns: 1fr minmax(180px, 540px) auto;
+  grid-template-columns: 220px minmax(240px, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 
 .brand {
@@ -56,6 +63,7 @@ body,
 .brand h1 {
   margin: 0;
   font-size: 24px;
+  letter-spacing: 0.2px;
 }
 
 .brand-dot {
@@ -70,8 +78,8 @@ body,
   align-items: center;
   gap: 8px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 10px;
+  border-radius: 999px;
+  padding: 10px 14px;
   background: var(--card);
 }
 
@@ -122,11 +130,11 @@ a {
 }
 
 .panel {
-  background: linear-gradient(180deg, var(--card), #111827);
+  background: linear-gradient(180deg, var(--card), var(--surface));
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 12px;
-  margin-bottom: 10px;
+  padding: 14px;
+  margin-bottom: 12px;
 }
 
 .panel.error {
@@ -135,14 +143,17 @@ a {
 
 .layout {
   display: grid;
-  grid-template-columns: 210px 1fr;
-  gap: 12px;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 14px;
 }
 
 .nav {
   display: grid;
   gap: 6px;
   align-content: start;
+  position: sticky;
+  top: 12px;
+  height: fit-content;
 }
 
 .nav button {
@@ -153,7 +164,7 @@ a {
 
 .nav button.active {
   background: linear-gradient(90deg, var(--brand), var(--brand-2));
-  color: #071822;
+  color: #fff;
   font-weight: 800;
 }
 
@@ -164,7 +175,13 @@ a {
 }
 
 .trend-pill {
-  min-width: 160px;
+  min-width: 220px;
+  text-align: left;
+  font-weight: 700;
+}
+
+.main {
+  min-width: 0;
 }
 
 .title-with-icon {
@@ -193,25 +210,34 @@ a {
 
 .grid {
   display: grid;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 12px;
 }
 
 .card {
   display: grid;
-  grid-template-columns: 150px 1fr;
-  gap: 10px;
+  grid-template-columns: 1fr;
+  gap: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
-  background: var(--card);
+  background: linear-gradient(180deg, var(--card), var(--surface));
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: #3f4a5e;
+  box-shadow: 0 10px 24px #00000035;
 }
 
 .poster {
   position: relative;
-  min-height: 150px;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
   padding: 0;
   border-radius: 0;
-  background: #0a1220;
+  background: #090a0d;
 }
 
 .poster img {
@@ -228,6 +254,12 @@ a {
   height: 100%;
   object-fit: cover;
   z-index: 1;
+}
+
+.poster-preview-static {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .poster-empty {
@@ -253,11 +285,12 @@ a {
 }
 
 .card-body {
-  padding: 10px 10px 10px 0;
+  padding: 12px;
 }
 
 .card-body h3 {
   margin: 0;
+  font-size: 16px;
 }
 
 .card-body p {
@@ -303,12 +336,14 @@ a {
   display: flex;
   gap: 6px;
   margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .act-row button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 7px 9px;
 }
 
 .channel-list,
@@ -479,7 +514,7 @@ video {
 
 .primary {
   background: linear-gradient(90deg, var(--brand), var(--brand-2));
-  color: #041822;
+  color: #fff;
   font-weight: 800;
 }
 
@@ -790,7 +825,27 @@ video {
     grid-template-columns: 1fr;
   }
   .nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 70;
     grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    background: #12141adc;
+    backdrop-filter: blur(9px);
+    border-top: 1px solid var(--line);
+    padding: 8px 10px;
+  }
+  .nav button {
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    padding: 7px 6px;
+  }
+  .main {
+    padding-bottom: 84px;
   }
   .player-grid {
     grid-template-columns: 1fr;
@@ -801,10 +856,27 @@ video {
   .yt-header {
     grid-template-columns: 1fr;
   }
-  .card {
+  .yt-page {
+    padding: 10px;
+  }
+  .grid {
     grid-template-columns: 1fr;
   }
-  .poster {
-    min-height: 180px;
+  .search {
+    padding: 9px 12px;
+  }
+  .trend-pill {
+    min-width: 180px;
+  }
+  .mini-player {
+    width: calc(100vw - 20px);
+    right: 10px;
+    bottom: 78px;
+  }
+  .player-control-row {
+    gap: 6px;
+  }
+  .player-control-row button {
+    padding: 7px 8px;
   }
 }

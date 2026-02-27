@@ -32,11 +32,25 @@ WEBAPP_ALLOWED_ORIGINS_RAW = [item.strip() for item in os.getenv("WEBAPP_ALLOWED
 WEBAPP_AUTH_MAX_AGE_SECONDS = int(os.getenv("WEBAPP_AUTH_MAX_AGE_SECONDS", "604800"))
 WEBAPP_ENABLE_DEV_AUTH = os.getenv("WEBAPP_ENABLE_DEV_AUTH", "0").strip() in {"1", "true", "yes"}
 WEBAPP_DEV_USER_ID = int(os.getenv("WEBAPP_DEV_USER_ID", "0") or 0)
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required for webapp backend.")
 if not MONGODB_URI:
     raise RuntimeError("MONGODB_URI is required for webapp backend.")
+
+
+def _parse_admin_ids(value: str) -> set[int]:
+    rows: set[int] = set()
+    for part in str(value or "").replace(";", ",").split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            rows.add(int(text))
+        except ValueError:
+            continue
+    return rows
 
 
 def _normalize_origins(items: list[str]) -> list[str]:
@@ -54,6 +68,7 @@ def _normalize_origins(items: list[str]) -> list[str]:
 
 
 WEBAPP_ALLOWED_ORIGINS = _normalize_origins(WEBAPP_ALLOWED_ORIGINS_RAW)
+ADMIN_IDS = _parse_admin_ids(ADMIN_IDS_RAW)
 
 
 client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
@@ -86,6 +101,21 @@ watch_progress_col.create_index(
 watch_progress_col.create_index([("user_tg_id", 1), ("updated_at", -1)])
 comment_reactions_col.create_index([("comment_id", 1), ("reaction", 1)])
 comment_reactions_col.create_index([("user_tg_id", 1), ("comment_id", 1)], unique=True)
+
+
+def _seed_admins_from_env() -> None:
+    if not ADMIN_IDS:
+        return
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for admin_id in ADMIN_IDS:
+        admins_col.update_one(
+            {"tg_id": int(admin_id)},
+            {"$setOnInsert": {"tg_id": int(admin_id), "added_at": now_iso}},
+            upsert=True,
+        )
+
+
+_seed_admins_from_env()
 
 BASE_DIR = Path(__file__).resolve().parent
 CLIENT_DIST_DIR = BASE_DIR.parent / "client" / "dist"
@@ -129,6 +159,8 @@ CONTENT_PROJECTION = {
 
 FILE_PATH_CACHE_TTL_SECONDS = 900
 _FILE_PATH_CACHE: dict[str, tuple[str, float]] = {}
+SERIAL_PREVIEW_CACHE_TTL_SECONDS = 900
+_SERIAL_PREVIEW_CACHE: dict[str, tuple[str, str, float]] = {}
 
 
 class AdminEpisodeIn(BaseModel):
@@ -252,6 +284,12 @@ def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str
     preview_file_id = _extract_preview_photo_file_id(content_type, doc)
     media_type = str(doc.get("media_type") or "")
     file_id = str(doc.get("file_id") or "")
+    if content_type == "serial" and not file_id:
+        serial_preview_file_id, serial_preview_media_type = _serial_preview_stream(content_id)
+        if serial_preview_file_id:
+            file_id = serial_preview_file_id
+            if not media_type:
+                media_type = serial_preview_media_type
     return {
         "id": content_id,
         "content_type": content_type,
@@ -296,6 +334,33 @@ def _safe_object_id(value: str) -> ObjectId | None:
         return ObjectId(value)
     except Exception:
         return None
+
+
+def _serial_preview_stream(serial_id: str) -> tuple[str, str]:
+    serial_ref = str(serial_id or "").strip()
+    if not serial_ref:
+        return "", ""
+    cached = _SERIAL_PREVIEW_CACHE.get(serial_ref)
+    now_ts = _now_ts()
+    if cached and cached[2] > now_ts:
+        return cached[0], cached[1]
+
+    oid = _safe_object_id(serial_ref)
+    if not oid:
+        return "", ""
+    doc = serial_episodes_col.find_one(
+        {"serial_id": oid, "file_id": {"$exists": True, "$ne": ""}},
+        {"file_id": 1, "media_type": 1},
+        sort=[("episode_number", 1)],
+    ) or {}
+    file_id = str(doc.get("file_id") or "")
+    media_type = str(doc.get("media_type") or "video")
+    _SERIAL_PREVIEW_CACHE[serial_ref] = (
+        file_id,
+        media_type,
+        now_ts + SERIAL_PREVIEW_CACHE_TTL_SECONDS,
+    )
+    return file_id, media_type
 
 
 async def _resolve_file_path(file_id: str) -> str:
@@ -1422,6 +1487,8 @@ async def _require_subscribed(user: dict[str, Any] = Depends(_current_user)) -> 
 
 
 def _is_admin_user(user_tg_id: int) -> bool:
+    if int(user_tg_id) in ADMIN_IDS:
+        return True
     return admins_col.find_one({"tg_id": user_tg_id}, {"_id": 1}) is not None
 
 
@@ -2173,6 +2240,19 @@ async def admin_create_content(
             }
         )
         episodes_created += 1
+
+    if not file_id and episodes_safe:
+        first_episode = episodes_safe[0]
+        serials_col.update_one(
+            {"_id": serial_id},
+            {
+                "$set": {
+                    "file_id": str(first_episode.file_id or "").strip(),
+                    "media_type": str(first_episode.media_type or "video").strip().lower() or "video",
+                }
+            },
+        )
+    _SERIAL_PREVIEW_CACHE.pop(str(serial_id), None)
 
     doc = serials_col.find_one({"_id": serial_id}) or {}
     item = _serialize_content(doc, "serial", await _get_bot_username())

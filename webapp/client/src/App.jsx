@@ -288,6 +288,16 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 			>
 				{img ? (
 					<img src={img} alt={item.title} loading='lazy' decoding='async' />
+				) : previewUrl ? (
+					<video
+						className='poster-preview-static'
+						src={previewUrl}
+						muted
+						autoPlay
+						loop
+						playsInline
+						preload='metadata'
+					/>
 				) : (
 					<div className='poster-empty'>No Preview</div>
 				)}

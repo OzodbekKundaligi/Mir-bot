@@ -277,19 +277,28 @@ function SkeletonFeed() {
 	)
 }
 
-function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
+function Card({
+	item,
+	initData,
+	mediaToken,
+	fav,
+	onWatch,
+	onFav,
+	onDownload,
+	onShare,
+}) {
 	const img = item.preview_file_id
-		? buildMediaUrl(item.preview_file_id, initData)
+		? buildMediaUrl(item.preview_file_id, initData, mediaToken)
 		: ''
 	const [hovered, setHovered] = useState(false)
 	const [imageFailed, setImageFailed] = useState(false)
 	const [previewFailed, setPreviewFailed] = useState(false)
 	const canPreview = Boolean(item.is_video && item.file_id && initData)
 	const streamPreviewUrl = canPreview
-		? buildStreamUrl(item.file_id, initData)
+		? buildStreamUrl(item.file_id, initData, mediaToken)
 		: ''
 	const previewFallbackUrl = canPreview
-		? buildMediaUrl(item.file_id, initData)
+		? buildMediaUrl(item.file_id, initData, mediaToken)
 		: ''
 	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
 	const showImage = Boolean(img && !imageFailed)
@@ -402,17 +411,17 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 	)
 }
 
-function HeroBanner({ item, initData, onWatch, onShare }) {
+function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 	const safeItem = item || {}
 	const poster = safeItem.preview_file_id
-		? buildMediaUrl(safeItem.preview_file_id, initData)
+		? buildMediaUrl(safeItem.preview_file_id, initData, mediaToken)
 		: ''
 	const canPreview = Boolean(safeItem.is_video && safeItem.file_id && initData)
 	const streamPreviewUrl = canPreview
-		? buildStreamUrl(safeItem.file_id, initData)
+		? buildStreamUrl(safeItem.file_id, initData, mediaToken)
 		: ''
 	const previewFallbackUrl = canPreview
-		? buildMediaUrl(safeItem.file_id, initData)
+		? buildMediaUrl(safeItem.file_id, initData, mediaToken)
 		: ''
 	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
 	const [previewFailed, setPreviewFailed] = useState(false)
@@ -487,13 +496,17 @@ function HeroBanner({ item, initData, onWatch, onShare }) {
 	)
 }
 
-function ShortCard({ item, initData, onWatch }) {
+function ShortCard({ item, initData, mediaToken, onWatch }) {
 	const poster = item.preview_file_id
-		? buildMediaUrl(item.preview_file_id, initData)
+		? buildMediaUrl(item.preview_file_id, initData, mediaToken)
 		: ''
 	const canStream = Boolean(item.file_id && initData)
-	const streamUrl = canStream ? buildStreamUrl(item.file_id, initData) : ''
-	const fallbackUrl = canStream ? buildMediaUrl(item.file_id, initData) : ''
+	const streamUrl = canStream
+		? buildStreamUrl(item.file_id, initData, mediaToken)
+		: ''
+	const fallbackUrl = canStream
+		? buildMediaUrl(item.file_id, initData, mediaToken)
+		: ''
 	const [src, setSrc] = useState(streamUrl)
 	const [failed, setFailed] = useState(false)
 	const desc = String(item.description || '').trim()
@@ -546,6 +559,9 @@ export default function App() {
 	const [initData, setInitData] = useState(getTelegramInitData())
 	const [theme, setTheme] = useState(
 		localStorage.getItem('kino_theme') || 'dark',
+	)
+	const [mediaToken, setMediaToken] = useState(
+		localStorage.getItem('kino_media_token') || '',
 	)
 	const [tab, setTab] = useState(initialView.tab)
 	const [query, setQuery] = useState(initialView.query)
@@ -866,6 +882,11 @@ export default function App() {
 		try {
 			const data = await fetchBootstrap(initData)
 			setBoot(data)
+			const tokenValue = String(data.media_token || '').trim()
+			if (tokenValue) {
+				setMediaToken(tokenValue)
+				localStorage.setItem('kino_media_token', tokenValue)
+			}
 			setContent(data.content || [])
 			setFavorites(data.favorites || [])
 			setHistory(data.history || [])
@@ -1017,8 +1038,8 @@ export default function App() {
 		])
 		await loadComments(item.content_type, item.id, commentSort)
 		setWatch(w)
-		setWatchUrl(buildStreamUrl(w.stream_file_id, initData))
-		setWatchFallbackUrl(buildMediaUrl(w.stream_file_id, initData))
+		setWatchUrl(buildStreamUrl(w.stream_file_id, initData, mediaToken))
+		setWatchFallbackUrl(buildMediaUrl(w.stream_file_id, initData, mediaToken))
 		setRecommendations(rec.items || [])
 		setRecommendationFeed(
 			rec.feed || {
@@ -1348,6 +1369,7 @@ export default function App() {
 								<HeroBanner
 									item={heroItem}
 									initData={initData}
+									mediaToken={mediaToken}
 									onWatch={onWatch}
 									onShare={onShare}
 								/>
@@ -1363,6 +1385,7 @@ export default function App() {
 													key={`${item.content_type}:${item.id}`}
 													item={item}
 													initData={initData}
+													mediaToken={mediaToken}
 													onWatch={onWatch}
 												/>
 											))}
@@ -1501,6 +1524,7 @@ export default function App() {
 													key={`${x.content_type}:${x.id}`}
 													item={x}
 													initData={initData}
+													mediaToken={mediaToken}
 													fav={favoriteMap.has(`${x.content_type}:${x.id}`)}
 													onWatch={onWatch}
 													onFav={onFav}
@@ -1525,6 +1549,7 @@ export default function App() {
 												key={`${x.content_type}:${x.id}`}
 												item={x}
 												initData={initData}
+												mediaToken={mediaToken}
 												fav
 												onWatch={onWatch}
 												onFav={onFav}
@@ -1548,6 +1573,7 @@ export default function App() {
 												key={`${x.content_type}:${x.id}`}
 												item={x}
 												initData={initData}
+												mediaToken={mediaToken}
 												fav={favoriteMap.has(`${x.content_type}:${x.id}`)}
 												onWatch={onWatch}
 												onFav={onFav}
@@ -1847,7 +1873,11 @@ export default function App() {
 											src={watchUrl}
 											poster={
 												watch.item?.preview_file_id
-													? buildMediaUrl(watch.item.preview_file_id, initData)
+													? buildMediaUrl(
+															watch.item.preview_file_id,
+															initData,
+															mediaToken,
+														)
 													: ''
 											}
 											controls

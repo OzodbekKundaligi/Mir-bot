@@ -306,14 +306,18 @@ export function adminCreateContent({ initData, payload }) {
 	})
 }
 
-export function buildMediaUrl(fileId, initData) {
-	const encodedId = encodeURIComponent(fileId)
-	const encodedInit = encodeURIComponent(initData || '')
-	return `${getApiBase()}/api/media/file?file_id=${encodedId}&init_data=${encodedInit}`
+export function buildMediaUrl(fileId, initData, mediaToken = '') {
+	const params = new URLSearchParams()
+	params.set('file_id', String(fileId || ''))
+	if (mediaToken) params.set('token', String(mediaToken || ''))
+	else if (initData) params.set('init_data', String(initData || ''))
+	return `${getApiBase()}/api/media/file?${params.toString()}`
 }
 
-export function buildStreamUrl(fileId, initData) {
-	const encodedId = encodeURIComponent(fileId)
-	const encodedInit = encodeURIComponent(initData || '')
-	return `${getApiBase()}/api/media/stream?file_id=${encodedId}&init_data=${encodedInit}`
+export function buildStreamUrl(fileId, initData, mediaToken = '') {
+	const params = new URLSearchParams()
+	params.set('file_id', String(fileId || ''))
+	if (mediaToken) params.set('token', String(mediaToken || ''))
+	else if (initData) params.set('init_data', String(initData || ''))
+	return `${getApiBase()}/api/media/stream?${params.toString()}`
 }

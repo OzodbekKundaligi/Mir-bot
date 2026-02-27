@@ -33,6 +33,8 @@ WEBAPP_ALLOWED_ORIGINS_RAW = [item.strip() for item in os.getenv("WEBAPP_ALLOWED
 WEBAPP_AUTH_MAX_AGE_SECONDS = int(os.getenv("WEBAPP_AUTH_MAX_AGE_SECONDS", "604800"))
 WEBAPP_ENABLE_DEV_AUTH = os.getenv("WEBAPP_ENABLE_DEV_AUTH", "0").strip() in {"1", "true", "yes"}
 WEBAPP_DEV_USER_ID = int(os.getenv("WEBAPP_DEV_USER_ID", "0") or 0)
+WEBAPP_MEDIA_TOKEN_TTL_SECONDS = int(os.getenv("WEBAPP_MEDIA_TOKEN_TTL_SECONDS", "604800"))
+WEBAPP_SUBSCRIPTION_CACHE_SECONDS = int(os.getenv("WEBAPP_SUBSCRIPTION_CACHE_SECONDS", "180"))
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 
 if not BOT_TOKEN:
@@ -165,6 +167,7 @@ FILE_PATH_CACHE_TTL_SECONDS = 900
 _FILE_PATH_CACHE: dict[str, tuple[str, float]] = {}
 SERIAL_PREVIEW_CACHE_TTL_SECONDS = 900
 _SERIAL_PREVIEW_CACHE: dict[str, tuple[str, str, float]] = {}
+_SUBSCRIPTION_CACHE: dict[int, tuple[list[dict[str, Any]], float]] = {}
 
 
 class AdminEpisodeIn(BaseModel):
@@ -1436,12 +1439,58 @@ def _dev_user_payload() -> dict[str, Any]:
     }
 
 
+def _issue_media_token(user_tg_id: int) -> str:
+    user_id = int(user_tg_id)
+    ttl = max(300, int(WEBAPP_MEDIA_TOKEN_TTL_SECONDS))
+    expires_at = int(time.time()) + ttl
+    payload = f"{user_id}:{expires_at}"
+    signature = hmac.new(
+        BOT_TOKEN.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{user_id}.{expires_at}.{signature}"
+
+
+def _verify_media_token(token: str) -> int:
+    raw = str(token or "").strip()
+    if not raw:
+        return 0
+    parts = raw.split(".", 2)
+    if len(parts) != 3:
+        return 0
+    user_raw, expires_raw, signature = parts
+    try:
+        user_id = int(user_raw)
+        expires_at = int(expires_raw)
+    except ValueError:
+        return 0
+    if user_id <= 0 or expires_at <= int(time.time()):
+        return 0
+    payload = f"{user_id}:{expires_at}"
+    expected = hmac.new(
+        BOT_TOKEN.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return 0
+    return user_id
+
+
 def _resolve_user(init_data: str) -> dict[str, Any]:
     if init_data:
         return _verify_webapp_init_data(init_data)
     if WEBAPP_ENABLE_DEV_AUTH and WEBAPP_DEV_USER_ID > 0:
         return _dev_user_payload()
     raise HTTPException(status_code=401, detail="Telegram auth required.")
+
+
+def _resolve_media_user(token: str, init_data: str) -> dict[str, Any]:
+    token_user_id = _verify_media_token(token)
+    if token_user_id > 0:
+        return {"id": token_user_id}
+    return _resolve_user(init_data)
 
 
 def _upsert_user(user: dict[str, Any]) -> None:
@@ -1495,8 +1544,14 @@ async def _get_bot_username() -> str | None:
 
 
 async def _get_missing_channels(user_tg_id: int) -> list[dict[str, Any]]:
+    now_ts = _now_ts()
+    cached = _SUBSCRIPTION_CACHE.get(int(user_tg_id))
+    if cached and cached[1] > now_ts:
+        return [dict(row) for row in cached[0]]
+
     channels = list(required_channels_col.find({"is_active": True}).sort("created_at", DESCENDING))
     if not channels:
+        _SUBSCRIPTION_CACHE[int(user_tg_id)] = ([], now_ts + max(30, WEBAPP_SUBSCRIPTION_CACHE_SECONDS))
         return []
     pending_refs = {
         str(row.get("channel_ref") or "").strip()
@@ -1515,6 +1570,8 @@ async def _get_missing_channels(user_tg_id: int) -> list[dict[str, Any]]:
             status = str(member.get("status") or "").strip().lower()
             joined = _is_subscribed_status(status)
         except HTTPException:
+            if cached and cached[1] > now_ts:
+                return [dict(row) for row in cached[0]]
             joined = False
         if joined:
             continue
@@ -1527,6 +1584,10 @@ async def _get_missing_channels(user_tg_id: int) -> list[dict[str, Any]]:
                 "join_url": _make_join_url(channel_ref, join_link),
             }
         )
+    _SUBSCRIPTION_CACHE[int(user_tg_id)] = (
+        [dict(row) for row in missing],
+        now_ts + max(30, WEBAPP_SUBSCRIPTION_CACHE_SECONDS),
+    )
     return missing
 
 
@@ -1602,6 +1663,7 @@ async def bootstrap(user: dict[str, Any] = Depends(_current_user)) -> dict[str, 
             "full_name": full_name or str(user.get("username") or "") or "User",
             "is_admin": is_admin,
         },
+        "media_token": _issue_media_token(user_id),
         "blocked": blocked,
         "missing_channels": missing_channels,
         "content": content,
@@ -2352,8 +2414,9 @@ async def admin_create_content(
 async def media_file(
     file_id: str = Query(...),
     init_data: str = Query(default=""),
+    token: str = Query(default=""),
 ) -> Response:
-    user = _resolve_user(init_data.strip())
+    user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     user_id = int(user["id"])
     missing = await _get_missing_channels(user_id)
     if missing:
@@ -2386,8 +2449,9 @@ async def media_stream(
     request: Request,
     file_id: str = Query(...),
     init_data: str = Query(default=""),
+    token: str = Query(default=""),
 ) -> Response:
-    user = _resolve_user(init_data.strip())
+    user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     user_id = int(user["id"])
     missing = await _get_missing_channels(user_id)
     if missing:

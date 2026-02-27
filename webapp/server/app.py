@@ -265,7 +265,30 @@ def _is_active(doc: dict[str, Any] | None) -> bool:
 
 def _is_video_media_type(media_type: str) -> bool:
     value = (media_type or "").strip().lower()
-    return value in {"video", "document"}
+    if not value:
+        return True
+    if value.startswith("video/"):
+        return True
+    if value.startswith("image/"):
+        return False
+    if value in {
+        "video",
+        "document",
+        "file",
+        "animation",
+        "mp4",
+        "mkv",
+        "mov",
+        "avi",
+        "webm",
+        "m4v",
+        "wmv",
+        "mpeg",
+    }:
+        return True
+    if value in {"photo", "image", "sticker", "gif"}:
+        return False
+    return True
 
 
 def _extract_preview_photo_file_id(content_type: str, doc: dict[str, Any]) -> str:

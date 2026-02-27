@@ -126,6 +126,15 @@ function clamp(value, min, max) {
 	return Math.min(max, Math.max(min, value))
 }
 
+function isPhotoMediaType(value) {
+	const media = String(value || '')
+		.trim()
+		.toLowerCase()
+	if (!media) return false
+	if (media.startsWith('image/')) return true
+	return media === 'photo' || media === 'image' || media === 'sticker'
+}
+
 function sortContentRows(items, sortMode) {
 	const rows = [...items]
 	if (sortMode === 'popular') {
@@ -293,7 +302,9 @@ function Card({
 	const [hovered, setHovered] = useState(false)
 	const [imageFailed, setImageFailed] = useState(false)
 	const [previewFailed, setPreviewFailed] = useState(false)
-	const canPreview = Boolean(item.is_video && item.file_id && initData)
+	const canPreview = Boolean(
+		item.file_id && initData && !isPhotoMediaType(item.media_type),
+	)
 	const streamPreviewUrl = canPreview
 		? buildStreamUrl(item.file_id, initData, mediaToken)
 		: ''
@@ -416,7 +427,9 @@ function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 	const poster = safeItem.preview_file_id
 		? buildMediaUrl(safeItem.preview_file_id, initData, mediaToken)
 		: ''
-	const canPreview = Boolean(safeItem.is_video && safeItem.file_id && initData)
+	const canPreview = Boolean(
+		safeItem.file_id && initData && !isPhotoMediaType(safeItem.media_type),
+	)
 	const streamPreviewUrl = canPreview
 		? buildStreamUrl(safeItem.file_id, initData, mediaToken)
 		: ''
@@ -500,7 +513,9 @@ function ShortCard({ item, initData, mediaToken, onWatch }) {
 	const poster = item.preview_file_id
 		? buildMediaUrl(item.preview_file_id, initData, mediaToken)
 		: ''
-	const canStream = Boolean(item.file_id && initData)
+	const canStream = Boolean(
+		item.file_id && initData && !isPhotoMediaType(item.media_type),
+	)
 	const streamUrl = canStream
 		? buildStreamUrl(item.file_id, initData, mediaToken)
 		: ''
@@ -1037,9 +1052,16 @@ export default function App() {
 			recommendationTask,
 		])
 		await loadComments(item.content_type, item.id, commentSort)
-		setWatch(w)
-		setWatchUrl(buildStreamUrl(w.stream_file_id, initData, mediaToken))
-		setWatchFallbackUrl(buildMediaUrl(w.stream_file_id, initData, mediaToken))
+			setWatch(w)
+		const streamFileId = String(w.stream_file_id || '').trim()
+		const usePhotoOnly = isPhotoMediaType(w.media_type)
+		if (streamFileId && !usePhotoOnly) {
+			setWatchUrl(buildStreamUrl(streamFileId, initData, mediaToken))
+			setWatchFallbackUrl(buildMediaUrl(streamFileId, initData, mediaToken))
+		} else {
+			setWatchUrl('')
+			setWatchFallbackUrl('')
+		}
 		setRecommendations(rec.items || [])
 		setRecommendationFeed(
 			rec.feed || {
@@ -1062,8 +1084,11 @@ export default function App() {
 		)
 		setPlayerVolume(clamp(Number(options.volume ?? 1), 0, 1))
 		setPlayerRate(clamp(Number(options.rate ?? 1), 0.5, 2))
-		setWatchOpen(true)
-		setMiniPlayer(null)
+			setWatchOpen(true)
+			setMiniPlayer(null)
+			if (!streamFileId) {
+				showFlash("Bu kontentda video manzili yo'q")
+			}
 	}
 
 	async function onProgress() {
@@ -1859,7 +1884,7 @@ export default function App() {
 						</header>
 						<div className='player-grid'>
 							<section>
-								{watch.is_video ? (
+								{watchUrl ? (
 									<div
 										className='player-wrap'
 										ref={playerWrapRef}

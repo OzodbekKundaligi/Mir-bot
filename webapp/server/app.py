@@ -80,6 +80,7 @@ required_channels_col = db["required_channels"]
 join_requests_col = db["join_requests"]
 movies_col = db["movies"]
 serials_col = db["serials"]
+shorts_col = db["shorts"]
 serial_episodes_col = db["serial_episodes"]
 favorites_col = db["favorites"]
 reactions_col = db["web_reactions"]
@@ -102,6 +103,7 @@ watch_progress_col.create_index(
 watch_progress_col.create_index([("user_tg_id", 1), ("updated_at", -1)])
 comment_reactions_col.create_index([("comment_id", 1), ("reaction", 1)])
 comment_reactions_col.create_index([("user_tg_id", 1), ("comment_id", 1)], unique=True)
+shorts_col.create_index([("created_at", -1)])
 
 
 def _seed_admins_from_env() -> None:
@@ -157,6 +159,7 @@ CONTENT_PROJECTION = {
     "is_active": 1,
     "created_at": 1,
 }
+VALID_CONTENT_TYPES = {"movie", "serial", "short"}
 
 FILE_PATH_CACHE_TTL_SECONDS = 900
 _FILE_PATH_CACHE: dict[str, tuple[str, float]] = {}
@@ -280,7 +283,12 @@ def _extract_preview_photo_file_id(content_type: str, doc: dict[str, Any]) -> st
 
 def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str | None) -> dict[str, Any]:
     content_id = _doc_id(doc)
-    payload = f"m_{content_id}" if content_type == "movie" else f"s_{content_id}"
+    if content_type == "movie":
+        payload = f"m_{content_id}"
+    elif content_type == "serial":
+        payload = f"s_{content_id}"
+    else:
+        payload = f"sh_{content_id}"
     deep_link = f"https://t.me/{bot_username}?start={payload}" if bot_username else ""
     preview_file_id = _extract_preview_photo_file_id(content_type, doc)
     media_type = str(doc.get("media_type") or "")
@@ -291,15 +299,25 @@ def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str
             file_id = serial_preview_file_id
             if not media_type:
                 media_type = serial_preview_media_type
+    code = str(doc.get("code") or "")
+    quality = str(doc.get("quality") or "")
+    genres = [str(g) for g in doc.get("genres", []) if str(g).strip()]
+    if content_type == "short":
+        if not code:
+            code = f"SH-{content_id[:6].upper()}"
+        if not quality:
+            quality = "Short"
+        if not genres:
+            genres = ["Shorts"]
     return {
         "id": content_id,
         "content_type": content_type,
-        "code": str(doc.get("code") or ""),
+        "code": code,
         "title": str(doc.get("title") or ""),
         "description": str(doc.get("description") or ""),
         "year": doc.get("year"),
-        "quality": str(doc.get("quality") or ""),
-        "genres": [str(g) for g in doc.get("genres", []) if str(g).strip()],
+        "quality": quality,
+        "genres": genres,
         "downloads": int(doc.get("downloads") or 0),
         "preview_file_id": preview_file_id,
         "media_type": media_type,
@@ -404,6 +422,11 @@ def _get_content_doc(content_type: str, content_ref: str, include_inactive: bool
         if doc and (include_inactive or _is_active(doc)):
             return doc
         return None
+    if content_type == "short":
+        doc = shorts_col.find_one({"_id": oid})
+        if doc and (include_inactive or _is_active(doc)):
+            return doc
+        return None
     return None
 
 
@@ -412,7 +435,7 @@ def _content_key(content_type: str, content_ref: str) -> str:
 
 
 def _content_match_clauses(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[str, set[str]] = {"movie": set(), "serial": set()}
+    grouped: dict[str, set[str]] = {"movie": set(), "serial": set(), "short": set()}
     for item in items:
         content_type = str(item.get("content_type") or "").strip()
         content_ref = str(item.get("id") or item.get("content_ref") or "").strip()
@@ -692,7 +715,7 @@ def _list_comment_threads(
 
 
 def _track_history_view(user_tg_id: int, content_type: str, content_ref: str) -> None:
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         return
     history_col.insert_one(
         {
@@ -714,6 +737,8 @@ def _list_recent_history(user_tg_id: int, bot_username: str | None, limit: int =
         if key in seen:
             continue
         seen.add(key)
+        if content_type not in VALID_CONTENT_TYPES:
+            continue
         doc = _get_content_doc(content_type, content_ref)
         if not doc:
             continue
@@ -770,7 +795,7 @@ def _list_continue_watching(user_tg_id: int, bot_username: str | None, limit: in
     for progress in watch_progress_col.find({"user_tg_id": user_tg_id}).sort("updated_at", DESCENDING).limit(max(1, limit * 3)):
         content_type = str(progress.get("content_type") or "")
         content_ref = str(progress.get("content_ref") or "")
-        if content_type not in {"movie", "serial"} or not content_ref:
+        if content_type not in VALID_CONTENT_TYPES or not content_ref:
             continue
         doc = _get_content_doc(content_type, content_ref)
         if not doc:
@@ -902,6 +927,10 @@ def _list_content(
         for doc in serials_col.find(mongo_filter, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(limit_safe):
             rows.append(_serialize_content(doc, "serial", bot_username))
 
+    if content_type in {"all", "short"}:
+        for doc in shorts_col.find(mongo_filter, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(limit_safe):
+            rows.append(_serialize_content(doc, "short", bot_username))
+
     rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
     rows = _fuzzy_content_fill(rows, query=query, content_type=content_type, limit=limit_safe, bot_username=bot_username)
     return _attach_engagement(rows[:limit_safe], user_tg_id)
@@ -941,6 +970,20 @@ def _list_trending(user_tg_id: int, bot_username: str | None, limit: int = 18) -
 
     enriched.sort(key=lambda x: (int(x.get("trend_score") or 0), str(x.get("created_at") or "")), reverse=True)
     return enriched[:limit_safe]
+
+
+def _list_shorts(
+    user_tg_id: int,
+    bot_username: str | None,
+    limit: int = 24,
+    include_inactive: bool = False,
+) -> list[dict[str, Any]]:
+    limit_safe = max(1, min(limit, 80))
+    query = {} if include_inactive else {"is_active": {"$ne": False}}
+    rows: list[dict[str, Any]] = []
+    for doc in shorts_col.find(query, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(limit_safe):
+        rows.append(_serialize_content(doc, "short", bot_username))
+    return _attach_engagement(rows, user_tg_id)
 
 
 def _user_preference_profile(user_tg_id: int, max_events: int = 80) -> dict[str, Any]:
@@ -1292,6 +1335,21 @@ def _list_notifications(user_tg_id: int, bot_username: str | None, limit: int = 
             )
         )
 
+    for doc in shorts_col.find({"is_active": {"$ne": False}}, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(scan_limit):
+        item = _serialize_content(doc, "short", bot_username)
+        created_at = str(item.get("created_at") or "")
+        if not created_at:
+            continue
+        notifications.append(
+            _serialize_notification(
+                item,
+                kind="new_short",
+                title="Yangi short qo'shildi",
+                text=str(item.get("title") or ""),
+                created_at=created_at,
+            )
+        )
+
     for item in _list_continue_watching(user_tg_id, bot_username, limit=4):
         progress = item.get("watch_progress") or {}
         updated_at = str(progress.get("updated_at") or "")
@@ -1530,6 +1588,7 @@ async def bootstrap(user: dict[str, Any] = Depends(_current_user)) -> dict[str, 
     favorites = [] if blocked else _list_favorites(user_id, bot_username)
     history = [] if blocked else _list_recent_history(user_id, bot_username, limit=12)
     trending = [] if blocked else _list_trending(user_id, bot_username, limit=18)
+    shorts = [] if blocked else _list_shorts(user_id, bot_username, limit=18)
     notifications = {"items": [], "unread_count": 0, "seen_at": ""} if blocked else _list_notifications(user_id, bot_username, limit=12)
     recommendations_feed = {"similar": [], "for_you": [], "trend": [], "continue_watching": []}
     if not blocked:
@@ -1549,12 +1608,14 @@ async def bootstrap(user: dict[str, Any] = Depends(_current_user)) -> dict[str, 
         "favorites": favorites,
         "history": history,
         "trending": trending,
+        "shorts": shorts,
         "continue_watching": [] if blocked else _list_continue_watching(user_id, bot_username, limit=12),
         "recommendations_feed": recommendations_feed,
         "notifications": notifications,
         "stats": {
             "movies": movies_col.count_documents({}),
             "serials": serials_col.count_documents({}),
+            "shorts": shorts_col.count_documents({}),
             "favorites": favorites_col.count_documents({"user_tg_id": user_id}),
             "comments": comments_col.count_documents({"user_tg_id": user_id}),
             "downloads": downloads_col.count_documents({"user_tg_id": user_id}),
@@ -1576,7 +1637,7 @@ async def content(
     user: dict[str, Any] = Depends(_require_subscribed),
 ) -> dict[str, Any]:
     user_id = int(user["id"])
-    content_type_safe = content_type if content_type in {"all", "movie", "serial"} else "all"
+    content_type_safe = content_type if content_type in {"all", "movie", "serial", "short"} else "all"
     bot_username = await _get_bot_username()
     items = _list_content(
         query=q,
@@ -1594,7 +1655,7 @@ async def content_detail(
     content_ref: str,
     user: dict[str, Any] = Depends(_require_subscribed),
 ) -> dict[str, Any]:
-    content_type_safe = content_type if content_type in {"movie", "serial"} else ""
+    content_type_safe = content_type if content_type in VALID_CONTENT_TYPES else ""
     if not content_type_safe:
         raise HTTPException(status_code=400, detail="Invalid content_type.")
     doc = _get_content_doc(content_type_safe, content_ref)
@@ -1660,7 +1721,7 @@ async def watch_info(
     episode: int | None = Query(default=None),
     user: dict[str, Any] = Depends(_require_subscribed),
 ) -> dict[str, Any]:
-    content_type_safe = content_type if content_type in {"movie", "serial"} else ""
+    content_type_safe = content_type if content_type in VALID_CONTENT_TYPES else ""
     if not content_type_safe:
         raise HTTPException(status_code=400, detail="Invalid content_type.")
 
@@ -1674,11 +1735,11 @@ async def watch_info(
     item.update(_engagement_summary(content_type_safe, content_ref, user_id))
     _track_history_view(user_id, content_type_safe, content_ref)
 
-    if content_type_safe == "movie":
+    if content_type_safe in {"movie", "short"}:
         file_id = str(doc.get("file_id") or "")
         media_type = str(doc.get("media_type") or "")
         if not file_id:
-            raise HTTPException(status_code=404, detail="Movie file not found.")
+            raise HTTPException(status_code=404, detail="Video file not found.")
         progress = _get_watch_progress(user_id, content_type_safe, content_ref, None)
         return {
             "item": item,
@@ -1725,7 +1786,7 @@ async def favorites(user: dict[str, Any] = Depends(_require_subscribed)) -> dict
 async def favorite_toggle(payload: FavoriteToggleIn, user: dict[str, Any] = Depends(_require_subscribed)) -> dict[str, Any]:
     content_type = payload.content_type.strip()
     content_ref = payload.content_ref.strip()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
 
     user_id = int(user["id"])
@@ -1756,7 +1817,7 @@ async def set_reaction(payload: ReactionIn, user: dict[str, Any] = Depends(_requ
     content_type = payload.content_type.strip()
     content_ref = payload.content_ref.strip()
     reaction = payload.reaction.strip().lower()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
     if reaction not in {"like", "dislike", "none"}:
         raise HTTPException(status_code=400, detail="Invalid reaction.")
@@ -1800,7 +1861,7 @@ async def list_comments(
     sort: str = Query(default="new"),
     user: dict[str, Any] = Depends(_require_subscribed),
 ) -> dict[str, Any]:
-    if content_type not in {"movie", "serial"}:
+    if content_type not in VALID_CONTENT_TYPES:
         raise HTTPException(status_code=400, detail="Invalid content_type.")
     sort_safe = sort if sort in {"new", "old", "top"} else "new"
     user_id = int(user["id"])
@@ -1846,7 +1907,7 @@ async def add_comment(payload: CommentIn, user: dict[str, Any] = Depends(_requir
     content_ref = payload.content_ref.strip()
     text = re.sub(r"\s+", " ", payload.text.strip())
     parent_comment_id = str(payload.parent_comment_id or "").strip()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
     if len(text) < 2:
         raise HTTPException(status_code=400, detail="Comment too short.")
@@ -1940,7 +2001,7 @@ async def set_comment_reaction(
 async def track_download(payload: DownloadTrackIn, user: dict[str, Any] = Depends(_require_subscribed)) -> dict[str, Any]:
     content_type = payload.content_type.strip()
     content_ref = payload.content_ref.strip()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
     if not _get_content_doc(content_type, content_ref):
         raise HTTPException(status_code=404, detail="Content not found.")
@@ -1962,7 +2023,7 @@ async def track_download(payload: DownloadTrackIn, user: dict[str, Any] = Depend
 async def track_watch_progress(payload: WatchProgressIn, user: dict[str, Any] = Depends(_require_subscribed)) -> dict[str, Any]:
     content_type = payload.content_type.strip()
     content_ref = payload.content_ref.strip()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
     if not _get_content_doc(content_type, content_ref):
         raise HTTPException(status_code=404, detail="Content not found.")
@@ -2050,6 +2111,7 @@ async def profile(user: dict[str, Any] = Depends(_require_subscribed)) -> dict[s
         "stats": {
             "movies": movies_col.count_documents({}),
             "serials": serials_col.count_documents({}),
+            "shorts": shorts_col.count_documents({}),
             "favorites": favorites_col.count_documents({"user_tg_id": user_id}),
             "comments": comments_col.count_documents({"user_tg_id": user_id}),
             "downloads": downloads_col.count_documents({"user_tg_id": user_id}),
@@ -2076,8 +2138,10 @@ async def admin_overview(user: dict[str, Any] = Depends(_require_admin)) -> dict
             "users": users_col.count_documents({}),
             "movies": movies_col.count_documents({}),
             "serials": serials_col.count_documents({}),
+            "shorts": shorts_col.count_documents({}),
             "movies_active": movies_col.count_documents({"is_active": {"$ne": False}}),
             "serials_active": serials_col.count_documents({"is_active": {"$ne": False}}),
+            "shorts_active": shorts_col.count_documents({"is_active": {"$ne": False}}),
             "episodes": serial_episodes_col.count_documents({}),
             "comments": comments_col.count_documents({}),
             "downloads": downloads_col.count_documents({}),
@@ -2095,7 +2159,7 @@ async def admin_content(
     user: dict[str, Any] = Depends(_require_admin),
 ) -> dict[str, Any]:
     _ = user
-    content_type_safe = content_type if content_type in {"all", "movie", "serial"} else "all"
+    content_type_safe = content_type if content_type in {"all", "movie", "serial", "short"} else "all"
     limit_safe = max(1, min(limit, 400))
     mongo_filter = _query_filter(q)
     bot_username = await _get_bot_username()
@@ -2107,6 +2171,9 @@ async def admin_content(
     if content_type_safe in {"all", "serial"}:
         for doc in serials_col.find(mongo_filter, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(limit_safe):
             rows.append(_serialize_content(doc, "serial", bot_username))
+    if content_type_safe in {"all", "short"}:
+        for doc in shorts_col.find(mongo_filter, CONTENT_PROJECTION).sort("created_at", DESCENDING).limit(limit_safe):
+            rows.append(_serialize_content(doc, "short", bot_username))
 
     serial_ids = [_safe_object_id(str(item.get("id") or "")) for item in rows if item.get("content_type") == "serial"]
     serial_ids_safe = [value for value in serial_ids if value is not None]
@@ -2133,7 +2200,7 @@ async def admin_toggle_content(payload: AdminToggleIn, user: dict[str, Any] = De
     _ = user
     content_type = payload.content_type.strip()
     content_ref = payload.content_ref.strip()
-    if content_type not in {"movie", "serial"} or not content_ref:
+    if content_type not in VALID_CONTENT_TYPES or not content_ref:
         raise HTTPException(status_code=400, detail="Invalid payload.")
 
     oid = _safe_object_id(content_ref)
@@ -2144,8 +2211,10 @@ async def admin_toggle_content(payload: AdminToggleIn, user: dict[str, Any] = De
     update = {"$set": {"is_active": bool(payload.is_active)}}
     if content_type == "movie":
         result = movies_col.update_one(criteria, update)
-    else:
+    elif content_type == "serial":
         result = serials_col.update_one(criteria, update)
+    else:
+        result = shorts_col.update_one(criteria, update)
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Content not found.")
     return {"ok": True}
@@ -2158,7 +2227,7 @@ async def admin_create_content(
 ) -> dict[str, Any]:
     _ = user
     content_type = str(payload.content_type or "").strip().lower()
-    if content_type not in {"movie", "serial"}:
+    if content_type not in VALID_CONTENT_TYPES:
         raise HTTPException(status_code=400, detail="Invalid content_type.")
 
     title = re.sub(r"\s+", " ", str(payload.title or "").strip())
@@ -2214,6 +2283,18 @@ async def admin_create_content(
         "is_active": bool(payload.is_active),
         "created_at": _now_iso(),
     }
+
+    if content_type == "short":
+        if not file_id:
+            raise HTTPException(status_code=400, detail="Short file_id is required.")
+        if not quality:
+            base_doc["quality"] = "Short"
+        if not genres:
+            base_doc["genres"] = ["Shorts"]
+        inserted = shorts_col.insert_one(base_doc)
+        doc = shorts_col.find_one({"_id": inserted.inserted_id}) or {}
+        item = _serialize_content(doc, "short", await _get_bot_username())
+        return {"ok": True, "item": item, "episodes_created": 0}
 
     if content_type == "movie":
         inserted = movies_col.insert_one(base_doc)
@@ -2339,6 +2420,7 @@ async def media_stream(
         response_headers["accept-ranges"] = "bytes"
     if "cache-control" not in response_headers:
         response_headers["cache-control"] = "public, max-age=300"
+    response_headers["content-disposition"] = "inline"
 
     media_type = resp.headers.get("content-type") or ""
     if not media_type or media_type == "application/octet-stream":

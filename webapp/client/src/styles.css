@@ -1,25 +1,32 @@
 :root {
-  --bg: #0f1013;
-  --card: #17191f;
-  --card-2: #20232b;
-  --line: #2f343e;
-  --text: #f3f5f9;
-  --muted: #9aa4b5;
-  --brand: #ff2e5f;
-  --brand-2: #ff7a2f;
-  --surface: #12141a;
+  --bg: #090909;
+  --card: #121212;
+  --card-2: #1a1a1a;
+  --line: #2d2d2d;
+  --text: #f5f5f5;
+  --muted: #a4a4a4;
+  --brand: #ffffff;
+  --brand-2: #d9d9d9;
+  --surface: #101010;
 }
 
 [data-theme="light"] {
-  --bg: #f4f6fb;
+  --bg: #f5f5f5;
   --card: #ffffff;
-  --card-2: #f1f4fa;
-  --line: #d4dcea;
-  --text: #131722;
-  --muted: #647087;
-  --brand: #e12852;
-  --brand-2: #ff7a2f;
+  --card-2: #f0f0f0;
+  --line: #d9d9d9;
+  --text: #121212;
+  --muted: #606060;
+  --brand: #151515;
+  --brand-2: #424242;
   --surface: #ffffff;
+}
+
+[data-theme="light"] .primary,
+[data-theme="light"] .nav button.active,
+[data-theme="light"] .watch-actions button.active,
+[data-theme="light"] .comment-actions button.active {
+  color: #ffffff;
 }
 
 * {
@@ -32,8 +39,8 @@ body,
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(circle at 8% 0%, #ff335522 0, transparent 42%),
-    radial-gradient(circle at 92% 0%, #ff7a2f20 0, transparent 38%),
+    radial-gradient(circle at 10% 0%, #ffffff14 0, transparent 42%),
+    radial-gradient(circle at 92% 0%, #ffffff0b 0, transparent 36%),
     var(--bg);
   color: var(--text);
   font-family: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Manrope", "Segoe UI", sans-serif;
@@ -70,7 +77,7 @@ body,
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: linear-gradient(45deg, var(--brand), var(--brand-2));
+  background: linear-gradient(45deg, #ffffff, #8f8f8f);
 }
 
 .search {
@@ -114,8 +121,8 @@ body,
   place-items: center;
   font-size: 10px;
   font-weight: 800;
-  background: #ff5f59;
-  color: #fff;
+  background: #ffffff;
+  color: #0e0e0e;
 }
 
 button,
@@ -181,9 +188,9 @@ a {
 
 .nav button.active {
   background: linear-gradient(100deg, var(--brand), var(--brand-2));
-  color: #fff;
+  color: #0e0e0e;
   font-weight: 800;
-  box-shadow: 0 8px 24px #ff3d6235;
+  box-shadow: 0 8px 24px #ffffff2b;
 }
 
 .nav button.active svg {
@@ -210,7 +217,7 @@ a {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 68% 20%, #ff6f6120 0, transparent 36%);
+  background: radial-gradient(circle at 68% 20%, #ffffff1f 0, transparent 36%);
 }
 
 .hero-media video,
@@ -263,7 +270,7 @@ a {
 
 .hero-content p {
   margin: 0;
-  color: #eaf0ff;
+  color: #e6e6e6;
   font-size: clamp(14px, 2vw, 17px);
   line-height: 1.5;
   max-width: 62ch;
@@ -278,8 +285,8 @@ a {
 .hero-meta span {
   border-radius: 999px;
   border: 1px solid #ffffff29;
-  background: #0a172cb3;
-  color: #eef4ff;
+  background: #101010bf;
+  color: #f2f2f2;
   font-size: 12px;
   padding: 4px 10px;
 }
@@ -299,9 +306,9 @@ a {
 }
 
 .hero-actions button:not(.primary) {
-  background: #0f223bb0;
+  background: #1a1a1ab8;
   border: 1px solid #ffffff28;
-  color: #f7f9ff;
+  color: #f1f1f1;
 }
 
 .trend-row {
@@ -316,6 +323,60 @@ a {
   font-weight: 700;
   border: 1px solid #ffffff16;
   background: linear-gradient(120deg, #ffffff08, #ffffff02), var(--card-2);
+}
+
+.shorts-section {
+  overflow: hidden;
+}
+
+.shorts-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(170px, 210px);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.short-card {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid #ffffff24;
+  background: #0b0b0b;
+  padding: 0;
+  text-align: left;
+  box-shadow: 0 10px 26px #0000005f;
+}
+
+.short-card video,
+.short-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.short-overlay {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 10px 10px 12px;
+  background: linear-gradient(180deg, transparent, #000000d9);
+  display: grid;
+  gap: 4px;
+}
+
+.short-overlay strong {
+  font-size: 13px;
+  line-height: 1.25;
+  color: #fff;
+}
+
+.short-overlay small {
+  color: #d8d8d8;
+  font-size: 11px;
+  line-height: 1.3;
 }
 
 .main {
@@ -571,7 +632,7 @@ a {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: #03070de6;
+  background: #000000eb;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -582,29 +643,37 @@ a {
   width: min(1300px, 100%);
   max-height: 95vh;
   overflow: auto;
-  background: var(--bg);
-  border: 1px solid var(--line);
+  background: #0b0b0b;
+  border: 1px solid #2b2b2b;
   border-radius: 22px;
-  padding: 12px;
+  padding: 14px;
+  box-shadow: 0 28px 70px #000000a3;
 }
 
 .player-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 10px;
+}
+
+.player-head h2 {
+  margin: 0;
+  font-size: clamp(18px, 2.5vw, 30px);
 }
 
 .player-grid {
   display: grid;
-  grid-template-columns: 1.7fr 1fr;
+  grid-template-columns: 1.85fr 1fr;
   gap: 12px;
 }
 
 video {
   width: 100%;
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid var(--line);
   background: #000;
+  box-shadow: 0 8px 30px #00000075;
 }
 
 .watch-actions,
@@ -653,8 +722,9 @@ video {
 
 .primary {
   background: linear-gradient(90deg, var(--brand), var(--brand-2));
-  color: #fff;
+  color: #0c0c0c;
   font-weight: 800;
+  border: 1px solid #ffffff36;
 }
 
 .empty-block {
@@ -662,7 +732,7 @@ video {
   border-radius: 12px;
   padding: 12px;
   color: var(--muted);
-  background: #0f1725;
+  background: #131313;
 }
 
 .profile-grid {
@@ -692,7 +762,7 @@ video {
   z-index: 120;
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: #111f33;
+  background: #161616;
   color: var(--text);
   padding: 7px 14px;
   font-size: 12px;
@@ -716,7 +786,7 @@ video {
 .skeleton-poster {
   height: 110px;
   border-radius: 10px;
-  background: linear-gradient(90deg, #1a2637, #22344f, #1a2637);
+  background: linear-gradient(90deg, #1b1b1b, #2a2a2a, #1b1b1b);
   background-size: 300% 100%;
   animation: sk 1.2s ease-in-out infinite;
 }
@@ -724,7 +794,7 @@ video {
 .skeleton-line {
   height: 10px;
   border-radius: 8px;
-  background: linear-gradient(90deg, #1a2637, #22344f, #1a2637);
+  background: linear-gradient(90deg, #1b1b1b, #2a2a2a, #1b1b1b);
   background-size: 300% 100%;
   animation: sk 1.2s ease-in-out infinite;
 }
@@ -754,7 +824,7 @@ video {
   width: 100%;
   height: 4px;
   border-radius: 999px;
-  background: #27384f;
+  background: #2e2e2e;
   overflow: hidden;
 }
 
@@ -785,7 +855,7 @@ video {
   padding: 12px 16px;
   border-radius: 16px;
   border: 1px solid #ffffff30;
-  background: #091426cf;
+  background: #101010cf;
   backdrop-filter: blur(14px);
   color: #fff;
   font-weight: 700;
@@ -796,10 +866,10 @@ video {
 }
 
 .player-controls {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px;
-  background: var(--card-2);
+  border: 1px solid #2d2d2d;
+  border-radius: 12px;
+  padding: 10px;
+  background: #141414;
 }
 
 .player-seek {
@@ -831,10 +901,17 @@ video {
   width: 90px;
 }
 
+.player-grid > aside {
+  border: 1px solid #2d2d2d;
+  border-radius: 14px;
+  background: #121212;
+  padding: 10px;
+}
+
 .watch-actions button.active,
 .comment-actions button.active {
   background: linear-gradient(90deg, var(--brand), var(--brand-2));
-  color: #071822;
+  color: #111111;
   font-weight: 800;
 }
 
@@ -962,7 +1039,7 @@ video {
   z-index: 80;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: #111318e0;
+  background: #111111e0;
   backdrop-filter: blur(14px);
   padding: 8px;
   display: grid;
@@ -1018,7 +1095,7 @@ video {
     z-index: 70;
     grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 6px;
-    background: #111a2be8;
+    background: #111111eb;
     backdrop-filter: blur(16px);
     border: 1px solid #ffffff22;
     border-radius: 24px;
@@ -1036,7 +1113,7 @@ video {
   }
   .nav button.active {
     animation: tabPop 0.24s ease;
-    box-shadow: 0 8px 22px #ff4f5f50;
+    box-shadow: 0 8px 22px #ffffff47;
   }
   .nav button svg {
     stroke-width: 2.25;
@@ -1067,6 +1144,9 @@ video {
   }
   .trend-pill {
     min-width: 180px;
+  }
+  .shorts-row {
+    grid-auto-columns: minmax(142px, 168px);
   }
   .mini-player {
     width: calc(100vw - 20px);

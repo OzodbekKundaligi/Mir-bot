@@ -75,7 +75,9 @@ function parseInitialViewState() {
 		.trim()
 		.toLowerCase()
 	const contentType =
-		contentTypeRaw === 'movie' || contentTypeRaw === 'serial'
+		contentTypeRaw === 'movie' ||
+		contentTypeRaw === 'serial' ||
+		contentTypeRaw === 'short'
 			? contentTypeRaw
 			: 'all'
 	const sortRaw = String(params.get('sort') || '')
@@ -283,15 +285,30 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 	const [imageFailed, setImageFailed] = useState(false)
 	const [previewFailed, setPreviewFailed] = useState(false)
 	const canPreview = Boolean(item.is_video && item.file_id && initData)
-	const previewUrl = canPreview ? buildStreamUrl(item.file_id, initData) : ''
+	const streamPreviewUrl = canPreview
+		? buildStreamUrl(item.file_id, initData)
+		: ''
+	const previewFallbackUrl = canPreview
+		? buildMediaUrl(item.file_id, initData)
+		: ''
+	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
 	const showImage = Boolean(img && !imageFailed)
-	const showStaticPreview = Boolean(!showImage && previewUrl && !previewFailed)
+	const showStaticPreview = Boolean(!showImage && previewSrc && !previewFailed)
 	const genreLabel = (item.genres || []).slice(0, 2).join(', ')
 
 	useEffect(() => {
 		setImageFailed(false)
 		setPreviewFailed(false)
-	}, [img, previewUrl, item.id, item.content_type])
+		setPreviewSrc(streamPreviewUrl)
+	}, [img, streamPreviewUrl, item.id, item.content_type])
+
+	function onPreviewError() {
+		if (previewFallbackUrl && previewSrc && previewSrc !== previewFallbackUrl) {
+			setPreviewSrc(previewFallbackUrl)
+			return
+		}
+		setPreviewFailed(true)
+	}
 
 	return (
 		<article className='card'>
@@ -314,27 +331,27 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 				) : showStaticPreview ? (
 					<video
 						className='poster-preview-static'
-						src={previewUrl}
+						src={previewSrc}
 						muted
 						autoPlay
 						loop
 						playsInline
 						preload='metadata'
-						onError={() => setPreviewFailed(true)}
+						onError={onPreviewError}
 					/>
 				) : (
 					<div className='poster-empty'>No Preview</div>
 				)}
-				{hovered && previewUrl && !previewFailed ? (
+				{hovered && previewSrc && !previewFailed ? (
 					<video
 						className='poster-preview'
-						src={previewUrl}
+						src={previewSrc}
 						muted
 						autoPlay
 						loop
 						playsInline
 						preload='metadata'
-						onError={() => setPreviewFailed(true)}
+						onError={onPreviewError}
 					/>
 				) : null}
 				<span className='play-chip'>
@@ -386,31 +403,60 @@ function Card({ item, initData, fav, onWatch, onFav, onDownload, onShare }) {
 }
 
 function HeroBanner({ item, initData, onWatch, onShare }) {
-	if (!item) return null
-	const poster = item.preview_file_id
-		? buildMediaUrl(item.preview_file_id, initData)
+	const safeItem = item || {}
+	const poster = safeItem.preview_file_id
+		? buildMediaUrl(safeItem.preview_file_id, initData)
 		: ''
-	const canPreview = Boolean(item.is_video && item.file_id && initData)
-	const previewUrl = canPreview ? buildStreamUrl(item.file_id, initData) : ''
-	const shortDescription = String(item.description || '')
+	const canPreview = Boolean(safeItem.is_video && safeItem.file_id && initData)
+	const streamPreviewUrl = canPreview
+		? buildStreamUrl(safeItem.file_id, initData)
+		: ''
+	const previewFallbackUrl = canPreview
+		? buildMediaUrl(safeItem.file_id, initData)
+		: ''
+	const [previewSrc, setPreviewSrc] = useState(streamPreviewUrl)
+	const [previewFailed, setPreviewFailed] = useState(false)
+	const shortDescription = String(safeItem.description || '')
 		.slice(0, 240)
 		.trim()
-	const genres = (item.genres || []).slice(0, 3)
+	const genres = (safeItem.genres || []).slice(0, 3)
+
+	useEffect(() => {
+		setPreviewSrc(streamPreviewUrl)
+		setPreviewFailed(false)
+	}, [streamPreviewUrl, safeItem.id, safeItem.content_type])
+
+	function onPreviewError() {
+		if (previewFallbackUrl && previewSrc && previewSrc !== previewFallbackUrl) {
+			setPreviewSrc(previewFallbackUrl)
+			return
+		}
+		setPreviewFailed(true)
+	}
+
+	if (!item) return null
+
 	return (
 		<section className='hero-banner'>
 			<div className='hero-media'>
-				{previewUrl ? (
+				{previewSrc && !previewFailed ? (
 					<video
-						src={previewUrl}
+						src={previewSrc}
 						muted
 						autoPlay
 						loop
 						playsInline
 						preload='metadata'
 						poster={poster}
+						onError={onPreviewError}
 					/>
 				) : poster ? (
-					<img src={poster} alt={item.title} loading='lazy' decoding='async' />
+					<img
+						src={poster}
+						alt={safeItem.title}
+						loading='lazy'
+						decoding='async'
+					/>
 				) : (
 					<div className='poster-empty'>No Preview</div>
 				)}
@@ -418,19 +464,19 @@ function HeroBanner({ item, initData, onWatch, onShare }) {
 			<div className='hero-overlay'>
 				<div className='hero-content'>
 					<span className='hero-kicker'>MirTopKino Premium</span>
-					<h2>{item.title || "Noma'lum"}</h2>
+					<h2>{safeItem.title || "Noma'lum"}</h2>
 					{shortDescription ? <p>{shortDescription}</p> : null}
 					<div className='hero-meta'>
-						<span>{item.year || '-'}</span>
-						<span>{item.quality || '-'}</span>
+						<span>{safeItem.year || '-'}</span>
+						<span>{safeItem.quality || '-'}</span>
 						{genres.length ? <span>{genres.join(' | ')}</span> : null}
 					</div>
 					<div className='hero-actions'>
-						<button className='primary' onClick={() => onWatch(item)}>
+						<button className='primary' onClick={() => onWatch(safeItem)}>
 							<Play size={16} />
 							Tomosha
 						</button>
-						<button onClick={() => onShare(item)}>
+						<button onClick={() => onShare(safeItem)}>
 							<Share2 size={16} />
 							Ulashish
 						</button>
@@ -438,6 +484,60 @@ function HeroBanner({ item, initData, onWatch, onShare }) {
 				</div>
 			</div>
 		</section>
+	)
+}
+
+function ShortCard({ item, initData, onWatch }) {
+	const poster = item.preview_file_id
+		? buildMediaUrl(item.preview_file_id, initData)
+		: ''
+	const canStream = Boolean(item.file_id && initData)
+	const streamUrl = canStream ? buildStreamUrl(item.file_id, initData) : ''
+	const fallbackUrl = canStream ? buildMediaUrl(item.file_id, initData) : ''
+	const [src, setSrc] = useState(streamUrl)
+	const [failed, setFailed] = useState(false)
+	const desc = String(item.description || '').trim()
+
+	useEffect(() => {
+		setSrc(streamUrl)
+		setFailed(false)
+	}, [streamUrl, item.id])
+
+	function onMediaError() {
+		if (fallbackUrl && src && src !== fallbackUrl) {
+			setSrc(fallbackUrl)
+			return
+		}
+		setFailed(true)
+	}
+
+	return (
+		<button className='short-card' onClick={() => onWatch(item)}>
+			{src && !failed ? (
+				<video
+					src={src}
+					muted
+					autoPlay
+					loop
+					playsInline
+					preload='metadata'
+					onError={onMediaError}
+				/>
+			) : poster ? (
+				<img
+					src={poster}
+					alt={item.title || 'Short'}
+					loading='lazy'
+					decoding='async'
+				/>
+			) : (
+				<div className='poster-empty'>Short</div>
+			)}
+			<div className='short-overlay'>
+				<strong>{item.title || 'Short'}</strong>
+				{desc ? <small>{desc.slice(0, 90)}</small> : null}
+			</div>
+		</button>
 	)
 }
 
@@ -460,9 +560,11 @@ export default function App() {
 	const [favorites, setFavorites] = useState([])
 	const [history, setHistory] = useState([])
 	const [trending, setTrending] = useState([])
+	const [shorts, setShorts] = useState([])
 	const [watch, setWatch] = useState(null)
 	const [watchOpen, setWatchOpen] = useState(false)
 	const [watchUrl, setWatchUrl] = useState('')
+	const [watchFallbackUrl, setWatchFallbackUrl] = useState('')
 	const [comments, setComments] = useState([])
 	const [commentText, setCommentText] = useState('')
 	const [commentSort, setCommentSort] = useState('new')
@@ -549,6 +651,7 @@ export default function App() {
 	}, [content, genreFilter, sortMode])
 	const heroItem =
 		homeRecommendationFeed.for_you?.[0] || trending[0] || homeRows?.[0] || null
+	const isShortForm = adminForm.content_type === 'short'
 
 	useEffect(() => {
 		const tg = window.Telegram?.WebApp
@@ -627,11 +730,13 @@ export default function App() {
 		setFavorites(prev => prev.map(patch))
 		setHistory(prev => prev.map(patch))
 		setTrending(prev => prev.map(patch))
+		setShorts(prev => prev.map(patch))
 		setBoot(prev => {
 			if (!prev) return prev
 			return {
 				...prev,
 				continue_watching: (prev.continue_watching || []).map(patch),
+				shorts: (prev.shorts || []).map(patch),
 				recommendations_feed: {
 					...(prev.recommendations_feed || {}),
 					for_you: (prev.recommendations_feed?.for_you || []).map(patch),
@@ -648,6 +753,7 @@ export default function App() {
 			setMiniPlayer({
 				watch,
 				url: watchUrl,
+				fallbackUrl: watchFallbackUrl,
 				episode: watch.current_episode,
 				position: Math.floor(video.currentTime || 0),
 				volume: Number(video.volume || 1),
@@ -655,6 +761,7 @@ export default function App() {
 			})
 		}
 		setWatchOpen(false)
+		setWatchFallbackUrl('')
 	}
 
 	function applyPlayerValues() {
@@ -672,6 +779,15 @@ export default function App() {
 		} else {
 			document.exitFullscreen?.()
 		}
+	}
+
+	function onWatchVideoError() {
+		if (watchFallbackUrl && watchUrl && watchUrl !== watchFallbackUrl) {
+			setWatchUrl(watchFallbackUrl)
+			showFlash("Asosiy stream ishlamadi, fallbackga o'tildi")
+			return
+		}
+		showFlash('Video ochilmadi, boshqa kontentni sinab ko‘ring')
 	}
 
 	function seekBy(delta) {
@@ -754,6 +870,7 @@ export default function App() {
 			setFavorites(data.favorites || [])
 			setHistory(data.history || [])
 			setTrending(data.trending || [])
+			setShorts(data.shorts || [])
 			setRecommendationFeed(
 				data.recommendations_feed || {
 					similar: [],
@@ -876,6 +993,19 @@ export default function App() {
 	}
 
 	async function onWatch(item, episode = null, options = {}) {
+		const canRecommend =
+			item.content_type === 'movie' || item.content_type === 'serial'
+		const recommendationTask = canRecommend
+			? fetchRecommendations({
+					initData,
+					contentType: item.content_type,
+					contentRef: item.id,
+					limit: 10,
+				})
+			: Promise.resolve({
+					items: [],
+					feed: { similar: [], for_you: [], trend: [], continue_watching: [] },
+				})
 		const [w, rec] = await Promise.all([
 			fetchWatchInfo({
 				initData,
@@ -883,16 +1013,12 @@ export default function App() {
 				contentRef: item.id,
 				episode,
 			}),
-			fetchRecommendations({
-				initData,
-				contentType: item.content_type,
-				contentRef: item.id,
-				limit: 10,
-			}),
+			recommendationTask,
 		])
 		await loadComments(item.content_type, item.id, commentSort)
 		setWatch(w)
 		setWatchUrl(buildStreamUrl(w.stream_file_id, initData))
+		setWatchFallbackUrl(buildMediaUrl(w.stream_file_id, initData))
 		setRecommendations(rec.items || [])
 		setRecommendationFeed(
 			rec.feed || {
@@ -1032,6 +1158,13 @@ export default function App() {
 				file_id: fileId,
 				media_type: 'video',
 			})
+		}
+		if (
+			adminForm.content_type === 'short' &&
+			!String(adminForm.file_id || '').trim()
+		) {
+			showFlash('Short uchun video file_id majburiy')
+			return
 		}
 		await adminCreateContent({
 			initData,
@@ -1218,6 +1351,24 @@ export default function App() {
 									onWatch={onWatch}
 									onShare={onShare}
 								/>
+								{shorts.length ? (
+									<section className='panel shorts-section'>
+										<h2 className='title-with-icon'>
+											<Video size={16} />
+											Shorts
+										</h2>
+										<div className='shorts-row'>
+											{shorts.slice(0, 18).map(item => (
+												<ShortCard
+													key={`${item.content_type}:${item.id}`}
+													item={item}
+													initData={initData}
+													onWatch={onWatch}
+												/>
+											))}
+										</div>
+									</section>
+								) : null}
 								<section className='panel'>
 									<h2 className='title-with-icon'>
 										<Flame size={16} />
@@ -1322,6 +1473,7 @@ export default function App() {
 											<option value='all'>Barchasi</option>
 											<option value='movie'>Kino</option>
 											<option value='serial'>Serial</option>
+											<option value='short'>Shorts</option>
 										</select>
 										<select
 											value={sortMode}
@@ -1505,6 +1657,7 @@ export default function App() {
 										>
 											<option value='movie'>Movie</option>
 											<option value='serial'>Serial</option>
+											<option value='short'>Short</option>
 										</select>
 										<input
 											placeholder='Title'
@@ -1526,36 +1679,40 @@ export default function App() {
 												}))
 											}
 										/>
-										<input
-											placeholder='Year'
-											value={adminForm.year}
-											onChange={e =>
-												setAdminForm(prev => ({
-													...prev,
-													year: e.target.value,
-												}))
-											}
-										/>
-										<input
-											placeholder='Quality'
-											value={adminForm.quality}
-											onChange={e =>
-												setAdminForm(prev => ({
-													...prev,
-													quality: e.target.value,
-												}))
-											}
-										/>
-										<input
-											placeholder='Genres: Action,Drama'
-											value={adminForm.genres}
-											onChange={e =>
-												setAdminForm(prev => ({
-													...prev,
-													genres: e.target.value,
-												}))
-											}
-										/>
+										{!isShortForm ? (
+											<>
+												<input
+													placeholder='Year'
+													value={adminForm.year}
+													onChange={e =>
+														setAdminForm(prev => ({
+															...prev,
+															year: e.target.value,
+														}))
+													}
+												/>
+												<input
+													placeholder='Quality'
+													value={adminForm.quality}
+													onChange={e =>
+														setAdminForm(prev => ({
+															...prev,
+															quality: e.target.value,
+														}))
+													}
+												/>
+												<input
+													placeholder='Genres: Action,Drama'
+													value={adminForm.genres}
+													onChange={e =>
+														setAdminForm(prev => ({
+															...prev,
+															genres: e.target.value,
+														}))
+													}
+												/>
+											</>
+										) : null}
 										<input
 											placeholder='Video file_id'
 											value={adminForm.file_id}
@@ -1576,28 +1733,32 @@ export default function App() {
 												}))
 											}
 										/>
-										<input
-											placeholder='Trailer URL'
-											value={adminForm.trailer_url}
+										{!isShortForm ? (
+											<input
+												placeholder='Trailer URL'
+												value={adminForm.trailer_url}
+												onChange={e =>
+													setAdminForm(prev => ({
+														...prev,
+														trailer_url: e.target.value,
+													}))
+												}
+											/>
+										) : null}
+									</div>
+									{adminForm.content_type === 'serial' ? (
+										<textarea
+											className='admin-episodes'
+											placeholder='Serial ep: 1|file_id (har satr)'
+											value={adminForm.episodes_text}
 											onChange={e =>
 												setAdminForm(prev => ({
 													...prev,
-													trailer_url: e.target.value,
+													episodes_text: e.target.value,
 												}))
 											}
 										/>
-									</div>
-									<textarea
-										className='admin-episodes'
-										placeholder='Serial ep: 1|file_id (har satr)'
-										value={adminForm.episodes_text}
-										onChange={e =>
-											setAdminForm(prev => ({
-												...prev,
-												episodes_text: e.target.value,
-											}))
-										}
-									/>
+									) : null}
 									<label className='admin-toggle'>
 										<input
 											type='checkbox'
@@ -1625,8 +1786,10 @@ export default function App() {
 												<div>
 													<strong>{x.title}</strong>
 													<small>
-														{x.content_type} / {x.code || '-'} /{' '}
-														{x.episodes_count || 0} ep
+														{x.content_type} / {x.code || '-'}
+														{x.content_type === 'serial'
+															? ` / ${x.episodes_count || 0} ep`
+															: ''}
 													</small>
 												</div>
 												<button
@@ -1703,6 +1866,7 @@ export default function App() {
 												}
 											}}
 											onTimeUpdate={onProgress}
+											onError={onWatchVideoError}
 											playsInline
 										/>
 										{gestureHint ? (
@@ -2046,6 +2210,15 @@ export default function App() {
 						src={miniPlayer.url}
 						autoPlay
 						controls
+						onError={() => {
+							setMiniPlayer(prev => {
+								if (!prev) return prev
+								if (prev.fallbackUrl && prev.url !== prev.fallbackUrl) {
+									return { ...prev, url: prev.fallbackUrl }
+								}
+								return prev
+							})
+						}}
 						onLoadedMetadata={() => {
 							if (!miniVideoRef.current) return
 							miniVideoRef.current.currentTime = clamp(
@@ -2081,4 +2254,3 @@ export default function App() {
 		</main>
 	)
 }
-

@@ -143,14 +143,21 @@ function isHttpUrl(value) {
 	return text.startsWith('http://') || text.startsWith('https://')
 }
 
-function buildPosterSource(fileId, initData, mediaToken) {
+function isImageMediaType(value) {
+	const media = String(value || '').trim().toLowerCase()
+	if (!media) return false
+	if (media.startsWith('image/')) return true
+	return media === 'photo' || media === 'image' || media === 'sticker'
+}
+
+function buildPosterSource(fileId, initData, mediaToken, mediaType = 'photo') {
 	const fileRef = String(fileId || '').trim()
 	if (!fileRef) return ''
 	if (isHttpUrl(fileRef)) return fileRef
-	return buildMediaUrl(fileRef, initData, mediaToken)
+	return buildMediaUrl(fileRef, initData, mediaToken, mediaType)
 }
 
-function buildPlayableSources(fileId, initData, mediaToken) {
+function buildPlayableSources(fileId, initData, mediaToken, mediaType = '') {
 	const fileRef = String(fileId || '').trim()
 	if (!fileRef) return []
 	if (isHttpUrl(fileRef)) return [fileRef]
@@ -159,12 +166,29 @@ function buildPlayableSources(fileId, initData, mediaToken) {
 	if (!init && !token) return []
 	const sources = []
 	if (token) {
-		sources.push(buildStreamUrl(fileRef, init, token))
-		sources.push(buildMediaUrl(fileRef, init, token))
+		sources.push(buildStreamUrl(fileRef, init, token, mediaType))
+		sources.push(buildMediaUrl(fileRef, init, token, mediaType))
 	}
-	sources.push(buildStreamUrl(fileRef, init, ''))
-	sources.push(buildMediaUrl(fileRef, init, ''))
+	sources.push(buildStreamUrl(fileRef, init, '', mediaType))
+	sources.push(buildMediaUrl(fileRef, init, '', mediaType))
 	return uniqueNonEmpty(sources)
+}
+
+function resolveCardPoster(item, initData, mediaToken) {
+	const posterRef = String(item.poster_file_id || item.preview_file_id || '').trim()
+	const posterType = String(item.preview_media_type || 'photo').trim()
+	if (!posterRef || !isImageMediaType(posterType)) return ''
+	return buildPosterSource(posterRef, initData, mediaToken, posterType)
+}
+
+function resolvePreviewSources(item, initData, mediaToken) {
+	const previewRef = String(item.preview_stream_file_id || item.file_id || '').trim()
+	const previewType = String(
+		item.preview_stream_file_id ? item.preview_media_type : item.media_type,
+	).trim()
+	if (!previewRef) return []
+	if (!item.preview_stream_file_id && isImageMediaType(previewType)) return []
+	return buildPlayableSources(previewRef, initData, mediaToken, previewType)
 }
 
 function sortContentRows(items, sortMode) {
@@ -328,15 +352,20 @@ function Card({
 	onDownload,
 	onShare,
 }) {
-	const img = item.preview_file_id
-		? buildPosterSource(item.preview_file_id, initData, mediaToken)
-		: ''
+	const img = resolveCardPoster(item, initData, mediaToken)
 	const [hovered, setHovered] = useState(false)
 	const [imageFailed, setImageFailed] = useState(false)
 	const [previewFailed, setPreviewFailed] = useState(false)
 	const previewSources = useMemo(
-		() => buildPlayableSources(item.file_id, initData, mediaToken),
-		[item.file_id, initData, mediaToken],
+		() => resolvePreviewSources(item, initData, mediaToken),
+		[
+			item.preview_stream_file_id,
+			item.file_id,
+			item.preview_media_type,
+			item.media_type,
+			initData,
+			mediaToken,
+		],
 	)
 	const [previewIndex, setPreviewIndex] = useState(0)
 	const previewSrc = previewSources[previewIndex] || ''
@@ -452,12 +481,17 @@ function Card({
 
 function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 	const safeItem = item || {}
-	const poster = safeItem.preview_file_id
-		? buildPosterSource(safeItem.preview_file_id, initData, mediaToken)
-		: ''
+	const poster = resolveCardPoster(safeItem, initData, mediaToken)
 	const previewSources = useMemo(
-		() => buildPlayableSources(safeItem.file_id, initData, mediaToken),
-		[safeItem.file_id, initData, mediaToken],
+		() => resolvePreviewSources(safeItem, initData, mediaToken),
+		[
+			safeItem.preview_stream_file_id,
+			safeItem.file_id,
+			safeItem.preview_media_type,
+			safeItem.media_type,
+			initData,
+			mediaToken,
+		],
 	)
 	const [previewIndex, setPreviewIndex] = useState(0)
 	const previewSrc = previewSources[previewIndex] || ''
@@ -534,12 +568,17 @@ function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 }
 
 function ShortCard({ item, initData, mediaToken, onWatch }) {
-	const poster = item.preview_file_id
-		? buildPosterSource(item.preview_file_id, initData, mediaToken)
-		: ''
+	const poster = resolveCardPoster(item, initData, mediaToken)
 	const previewSources = useMemo(
-		() => buildPlayableSources(item.file_id, initData, mediaToken),
-		[item.file_id, initData, mediaToken],
+		() => resolvePreviewSources(item, initData, mediaToken),
+		[
+			item.preview_stream_file_id,
+			item.file_id,
+			item.preview_media_type,
+			item.media_type,
+			initData,
+			mediaToken,
+		],
 	)
 	const [previewIndex, setPreviewIndex] = useState(0)
 	const src = previewSources[previewIndex] || ''
@@ -1086,7 +1125,12 @@ export default function App() {
 			return
 		}
 		setWatch(w)
-		const sources = buildPlayableSources(streamFileId, initData, mediaToken)
+		const sources = buildPlayableSources(
+			streamFileId,
+			initData,
+			mediaToken,
+			String(w.media_type || ''),
+		)
 		setWatchSources(sources)
 		setWatchSourceIndex(0)
 		setWatchUrl(sources[0] || '')
@@ -1921,14 +1965,17 @@ export default function App() {
 										onTouchCancel={onTouchEnd}
 									>
 										<video
+											key={watchUrl}
 											ref={videoRef}
 											src={watchUrl}
 											poster={
-												watch.item?.preview_file_id
+												watch.item?.poster_file_id || watch.item?.preview_file_id
 													? buildPosterSource(
-															watch.item.preview_file_id,
+															watch.item.poster_file_id ||
+																watch.item.preview_file_id,
 															initData,
 															mediaToken,
+															watch.item.preview_media_type || 'photo',
 														)
 													: ''
 											}

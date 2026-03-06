@@ -306,17 +306,19 @@ export function adminCreateContent({ initData, payload }) {
 	})
 }
 
-export function buildMediaUrl(fileId, initData, mediaToken = '') {
+export function buildMediaUrl(fileId, initData, mediaToken = '', mediaType = '') {
 	const params = new URLSearchParams()
 	params.set('file_id', String(fileId || ''))
+	if (mediaType) params.set('media_type', String(mediaType || ''))
 	if (mediaToken) params.set('token', String(mediaToken || ''))
 	else if (initData) params.set('init_data', String(initData || ''))
 	return `${getApiBase()}/api/media/file?${params.toString()}`
 }
 
-export function buildStreamUrl(fileId, initData, mediaToken = '') {
+export function buildStreamUrl(fileId, initData, mediaToken = '', mediaType = '') {
 	const params = new URLSearchParams()
 	params.set('file_id', String(fileId || ''))
+	if (mediaType) params.set('media_type', String(mediaType || ''))
 	if (mediaToken) params.set('token', String(mediaToken || ''))
 	else if (initData) params.set('init_data', String(initData || ''))
 	return `${getApiBase()}/api/media/stream?${params.toString()}`

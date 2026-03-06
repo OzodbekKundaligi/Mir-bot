@@ -153,10 +153,26 @@ CONTENT_PROJECTION = {
     "genres": 1,
     "downloads": 1,
     "media_type": 1,
+    "mime_type": 1,
+    "file_mime_type": 1,
+    "content_type": 1,
     "file_id": 1,
+    "stream_file_id": 1,
+    "video_file_id": 1,
+    "media_file_id": 1,
+    "telegram_file_id": 1,
+    "source_file_id": 1,
+    "video_url": 1,
+    "stream_url": 1,
+    "file_url": 1,
+    "url": 1,
     "preview_media_type": 1,
     "preview_file_id": 1,
     "preview_photo_file_id": 1,
+    "poster_file_id": 1,
+    "cover_file_id": 1,
+    "thumbnail_file_id": 1,
+    "thumb_file_id": 1,
     "trailer_url": 1,
     "is_active": 1,
     "created_at": 1,
@@ -276,6 +292,15 @@ def _is_http_url(value: str) -> bool:
     return text.startswith("http://") or text.startswith("https://")
 
 
+def _is_image_media_type(media_type: str) -> bool:
+    value = str(media_type or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("image/"):
+        return True
+    return value in {"photo", "image", "sticker"}
+
+
 def _extract_content_file_ref(doc: dict[str, Any]) -> str:
     return _first_non_empty_str(
         doc,
@@ -290,6 +315,21 @@ def _extract_content_file_ref(doc: dict[str, Any]) -> str:
             "stream_url",
             "file_url",
             "url",
+        ],
+    )
+
+
+def _extract_preview_file_ref(doc: dict[str, Any]) -> str:
+    return _first_non_empty_str(
+        doc,
+        [
+            "preview_file_id",
+            "preview_stream_file_id",
+            "preview_video_file_id",
+            "preview_media_file_id",
+            "poster_id",
+            "preview_id",
+            "trailer_url",
         ],
     )
 
@@ -313,6 +353,36 @@ def _extract_media_type(doc: dict[str, Any]) -> str:
     if guessed:
         return guessed
     return "video"
+
+
+def _extract_preview_media_type(doc: dict[str, Any]) -> str:
+    preview_photo = _first_non_empty_str(
+        doc,
+        [
+            "preview_photo_file_id",
+            "poster_file_id",
+            "cover_file_id",
+            "thumbnail_file_id",
+            "thumb_file_id",
+        ],
+    )
+    if preview_photo:
+        return "photo"
+    preview_media_type = _first_non_empty_str(
+        doc,
+        [
+            "preview_media_type",
+            "preview_mime_type",
+            "preview_content_type",
+        ],
+    )
+    if preview_media_type:
+        return preview_media_type
+    preview_ref = _extract_preview_file_ref(doc)
+    if not preview_ref:
+        return ""
+    guessed = _guess_media_type(preview_ref, fallback="")
+    return guessed or ""
 
 
 def _is_video_media_type(media_type: str) -> bool:
@@ -356,13 +426,14 @@ def _extract_preview_photo_file_id(content_type: str, doc: dict[str, Any]) -> st
     )
     if preview_photo:
         return preview_photo
-    preview_file_id = _first_non_empty_str(doc, ["preview_file_id", "poster_id", "preview_id"])
-    if preview_file_id:
+    preview_file_id = _extract_preview_file_ref(doc)
+    preview_media_type = _extract_preview_media_type(doc)
+    if preview_file_id and _is_image_media_type(preview_media_type):
         return preview_file_id
     if content_type == "movie":
         media_type = _extract_media_type(doc)
         file_id = _extract_content_file_ref(doc)
-        if media_type == "photo" and file_id:
+        if _is_image_media_type(media_type) and file_id:
             return file_id
     return ""
 
@@ -377,6 +448,11 @@ def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str
         payload = f"sh_{content_id}"
     deep_link = f"https://t.me/{bot_username}?start={payload}" if bot_username else ""
     preview_file_id = _extract_preview_photo_file_id(content_type, doc)
+    preview_media_type = _extract_preview_media_type(doc)
+    preview_stream_file_id = ""
+    preview_file_ref = _extract_preview_file_ref(doc)
+    if preview_file_ref and preview_media_type and not _is_image_media_type(preview_media_type):
+        preview_stream_file_id = preview_file_ref
     media_type = _extract_media_type(doc)
     file_id = _extract_content_file_ref(doc)
     if content_type == "serial" and not file_id:
@@ -406,6 +482,9 @@ def _serialize_content(doc: dict[str, Any], content_type: str, bot_username: str
         "genres": genres,
         "downloads": int(doc.get("downloads") or 0),
         "preview_file_id": preview_file_id,
+        "poster_file_id": preview_file_id,
+        "preview_stream_file_id": preview_stream_file_id,
+        "preview_media_type": preview_media_type,
         "media_type": media_type,
         "file_id": file_id,
         "is_video": _is_video_media_type(media_type),
@@ -450,6 +529,27 @@ def _guess_media_type(file_path: str, fallback: str = "application/octet-stream"
     if guessed:
         return guessed
     return fallback
+
+
+def _resolve_media_response_type(
+    upstream_media_type: str,
+    media_ref: str,
+    media_type_hint: str,
+) -> str:
+    current = str(upstream_media_type or "").strip().lower()
+    if current and current != "application/octet-stream":
+        return upstream_media_type
+    guessed = _guess_media_type(media_ref, fallback="")
+    if guessed and guessed != "application/octet-stream":
+        return guessed
+    hint = str(media_type_hint or "").strip().lower()
+    if _is_image_media_type(hint):
+        return "image/jpeg"
+    if hint == "animation":
+        return "video/mp4"
+    if _is_video_media_type(hint):
+        return "video/mp4"
+    return "application/octet-stream"
 
 
 def _serial_preview_stream(serial_id: str) -> tuple[str, str]:
@@ -2556,6 +2656,7 @@ async def media_file(
     file_id: str = Query(...),
     init_data: str = Query(default=""),
     token: str = Query(default=""),
+    media_type: str = Query(default=""),
 ) -> Response:
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     _ = user
@@ -2568,12 +2669,14 @@ async def media_file(
         resp = await session.get(source_url)
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Cannot download media ({resp.status_code}).")
-    media_type = resp.headers.get("content-type") or ""
-    if not media_type or media_type == "application/octet-stream":
-        media_type = _guess_media_type(media_ref, fallback="application/octet-stream")
+    response_media_type = _resolve_media_response_type(
+        upstream_media_type=resp.headers.get("content-type") or "",
+        media_ref=media_ref,
+        media_type_hint=media_type,
+    )
     return Response(
         content=resp.content,
-        media_type=media_type,
+        media_type=response_media_type,
         headers={
             "cache-control": "public, max-age=300",
             "content-disposition": "inline",
@@ -2587,6 +2690,7 @@ async def media_stream(
     file_id: str = Query(...),
     init_data: str = Query(default=""),
     token: str = Query(default=""),
+    media_type: str = Query(default=""),
 ) -> Response:
     user = _resolve_media_user(token=token.strip(), init_data=init_data.strip())
     _ = user
@@ -2619,14 +2723,16 @@ async def media_stream(
         response_headers["cache-control"] = "public, max-age=300"
     response_headers["content-disposition"] = "inline"
 
-    media_type = resp.headers.get("content-type") or ""
-    if not media_type or media_type == "application/octet-stream":
-        media_type = _guess_media_type(media_ref, fallback="application/octet-stream")
+    response_media_type = _resolve_media_response_type(
+        upstream_media_type=resp.headers.get("content-type") or "",
+        media_ref=media_ref,
+        media_type_hint=media_type,
+    )
     return StreamingResponse(
         resp.aiter_bytes(chunk_size=1024 * 256),
         status_code=resp.status_code,
         headers=response_headers,
-        media_type=media_type,
+        media_type=response_media_type,
         background=BackgroundTask(_close_http_stream, resp, session),
     )
 

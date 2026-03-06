@@ -13,6 +13,7 @@ import {
 	Pause,
 	Play,
 	Reply,
+	RotateCw,
 	Search,
 	Send,
 	Settings,
@@ -120,6 +121,13 @@ function formatDuration(secondsValue) {
 	if (h > 0)
 		return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 	return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function formatContentKind(contentType) {
+	const value = String(contentType || '').trim().toLowerCase()
+	if (value === 'serial') return 'Serial'
+	if (value === 'short') return 'Short'
+	return 'Kino'
 }
 
 function clamp(value, min, max) {
@@ -628,6 +636,55 @@ function ShortCard({ item, initData, mediaToken, onWatch }) {
 	)
 }
 
+function MediaShelfCard({
+	item,
+	initData,
+	mediaToken,
+	onClick,
+	progressLabel = '',
+	progressPercent = 0,
+}) {
+	const poster = resolveCardPoster(item, initData, mediaToken)
+	const meta = [
+		formatContentKind(item.content_type),
+		item.year || '',
+		item.quality || '',
+	]
+		.filter(Boolean)
+		.join(' • ')
+
+	return (
+		<button className='media-shelf-card' onClick={onClick}>
+			<div className='media-shelf-thumb'>
+				{poster ? (
+					<img
+						src={poster}
+						alt={item.title || 'Preview'}
+						loading='lazy'
+						decoding='async'
+					/>
+				) : (
+					<div className='poster-empty'>Preview</div>
+				)}
+				<span className='media-shelf-chip'>
+					<Play size={12} />
+					Ko'rish
+				</span>
+				{progressPercent > 0 ? (
+					<span className='media-shelf-progress'>
+						<span style={{ width: `${progressPercent}%` }} />
+					</span>
+				) : null}
+			</div>
+			<div className='media-shelf-body'>
+				<strong>{item.title || "Noma'lum"}</strong>
+				{meta ? <small>{meta}</small> : null}
+				{progressLabel ? <small className='media-shelf-label'>{progressLabel}</small> : null}
+			</div>
+		</button>
+	)
+}
+
 export default function App() {
 	const initialView = useMemo(() => parseInitialViewState(), [])
 	const [initData, setInitData] = useState(getTelegramInitData())
@@ -689,6 +746,7 @@ export default function App() {
 	const [notifOpen, setNotifOpen] = useState(false)
 	const [notifLoading, setNotifLoading] = useState(false)
 	const [miniPlayer, setMiniPlayer] = useState(null)
+	const [theaterMode, setTheaterMode] = useState(false)
 	const [playerTime, setPlayerTime] = useState(0)
 	const [playerDuration, setPlayerDuration] = useState(0)
 	const [playerVolume, setPlayerVolume] = useState(1)
@@ -744,6 +802,26 @@ export default function App() {
 		homeRecommendationFeed.for_you?.[0] || trending[0] || homeRows?.[0] || null
 	const isShortForm = adminForm.content_type === 'short'
 	const simplePlayer = true
+	const watchPrimaryRecommendations =
+		recommendationFeed.for_you?.length
+			? recommendationFeed.for_you
+			: recommendationFeed.similar?.length
+				? recommendationFeed.similar
+				: recommendations
+	const watchTrendRecommendations = recommendationFeed.trend || []
+	const watchContinueRecommendations = recommendationFeed.continue_watching || []
+	const currentWatchKey = watch
+		? `${watch.item?.content_type || ''}:${watch.item?.id || ''}`
+		: ''
+	const watchSidebarPrimaryRows = watchPrimaryRecommendations
+		.filter(row => `${row.content_type || ''}:${row.id || ''}` !== currentWatchKey)
+		.slice(0, 8)
+	const watchSidebarTrendRows = watchTrendRecommendations
+		.filter(row => `${row.content_type || ''}:${row.id || ''}` !== currentWatchKey)
+		.slice(0, 6)
+	const watchSidebarContinueRows = watchContinueRecommendations
+		.filter(row => `${row.content_type || ''}:${row.id || ''}` !== currentWatchKey)
+		.slice(0, 6)
 
 	useEffect(() => {
 		const tg = window.Telegram?.WebApp
@@ -853,9 +931,22 @@ export default function App() {
 				rate: Number(video.playbackRate || 1),
 			})
 		}
+		try {
+			if (document.fullscreenElement) {
+				document.exitFullscreen?.()
+			}
+		} catch {
+			// Ignore fullscreen exit errors.
+		}
+		try {
+			window.screen?.orientation?.unlock?.()
+		} catch {
+			// Orientation unlock is not supported everywhere.
+		}
 		setWatchOpen(false)
 		setWatchSources([])
 		setWatchSourceIndex(0)
+		setTheaterMode(false)
 	}
 
 	function applyPlayerValues() {
@@ -865,14 +956,45 @@ export default function App() {
 		video.playbackRate = playerRate
 	}
 
-	function toggleFullscreen() {
+	async function requestPlayerFullscreen(lockLandscape = false) {
 		const target = playerWrapRef.current
 		if (!target) return
-		if (!document.fullscreenElement) {
-			target.requestFullscreen?.()
-		} else {
-			document.exitFullscreen?.()
+		try {
+			if (document.fullscreenElement !== target) {
+				await target.requestFullscreen?.()
+			}
+		} catch {
+			// Fullscreen may be blocked by the environment.
 		}
+		if (lockLandscape) {
+			try {
+				await window.screen?.orientation?.lock?.('landscape')
+			} catch {
+				// Orientation lock may not be available.
+			}
+		}
+	}
+
+	async function toggleFullscreen() {
+		if (!document.fullscreenElement) {
+			await requestPlayerFullscreen(false)
+			return
+		}
+		try {
+			await document.exitFullscreen?.()
+		} catch {
+			// Ignore fullscreen exit errors.
+		}
+		try {
+			window.screen?.orientation?.unlock?.()
+		} catch {
+			// Orientation unlock is not supported everywhere.
+		}
+	}
+
+	async function openLandscapeMode() {
+		setTheaterMode(true)
+		await requestPlayerFullscreen(true)
 	}
 
 	function onWatchVideoError() {
@@ -1543,7 +1665,10 @@ export default function App() {
 								) : null}
 								{continueWatching.length ? (
 									<section className='panel'>
-										<h2>Davom Ettirish</h2>
+										<h2 className='title-with-icon'>
+											<Clock3 size={16} />
+											Davom Ettirish
+										</h2>
 										<div className='continue-row'>
 											{continueWatching.slice(0, 12).map(item => {
 												const progress = item.watch_progress || {}
@@ -1560,22 +1685,21 @@ export default function App() {
 															)
 														: 0
 												return (
-													<button
+													<MediaShelfCard
 														key={`${item.content_type}:${item.id}:${
 															progress.episode_number || 0
 														}`}
-														className='continue-item'
+														item={item}
+														initData={initData}
+														mediaToken={mediaToken}
+														progressPercent={percent}
+														progressLabel={
+															percent ? `${percent}% ko'rilgan` : 'Yangi boshlash'
+														}
 														onClick={() =>
 															onWatch(item, progress.episode_number ?? null)
 														}
-													>
-														<strong>{item.title || "Noma'lum"}</strong>
-														<small>
-															{percent
-																? `${percent}% ko'rilgan`
-																: 'Yangi boshlash'}
-														</small>
-													</button>
+													/>
 												)
 											})}
 										</div>
@@ -1943,18 +2067,50 @@ export default function App() {
 
 			{watchOpen && watch ? (
 				<section className='player-overlay' onClick={() => closeWatch(false)}>
-					<div className='player-shell' onClick={e => e.stopPropagation()}>
+					<div
+						className={`player-shell ${theaterMode ? 'player-shell-theater' : ''}`}
+						onClick={e => e.stopPropagation()}
+					>
 						<header className='player-head'>
-							<h2>{watch.item?.title}</h2>
+							<div className='player-heading'>
+								<span className='player-kicker'>
+									{formatContentKind(watch.item?.content_type)} Player
+								</span>
+								<h2>{watch.item?.title}</h2>
+								<p>
+									{[
+										watch.item?.year || '',
+										watch.item?.quality || '',
+										(watch.item?.genres || []).slice(0, 3).join(' / '),
+									]
+										.filter(Boolean)
+										.join(' / ') || 'Web ichida tomosha'}
+								</p>
+							</div>
 							<div className='player-head-actions'>
-								{!simplePlayer ? (
-									<button onClick={() => closeWatch(true)}>Mini</button>
-								) : null}
-								<button onClick={() => closeWatch(false)}>Yopish</button>
+								<button onClick={() => setTheaterMode(v => !v)}>
+									{theaterMode ? 'Default' : 'Theater'}
+								</button>
+								<button onClick={openLandscapeMode}>
+									<RotateCw size={15} />
+									Landscape
+								</button>
+								<button onClick={toggleFullscreen}>
+									<Fullscreen size={15} />
+									Full
+								</button>
+								<button onClick={() => closeWatch(false)}>
+									<X size={15} />
+									Yopish
+								</button>
 							</div>
 						</header>
-						<div className={`player-grid ${simplePlayer ? 'player-grid-simple' : ''}`}>
-							<section>
+						<div
+							className={`player-grid ${simplePlayer ? 'player-grid-simple' : ''} ${
+								theaterMode ? 'player-grid-theater' : ''
+							}`}
+						>
+							<section className='watch-column'>
 								{watchUrl ? (
 									<div
 										className='player-wrap'
@@ -1998,172 +2154,195 @@ export default function App() {
 											onError={onWatchVideoError}
 											playsInline
 										/>
-										{!simplePlayer && gestureHint ? (
+										{gestureHint ? (
 											<div className='gesture-overlay'>{gestureHint}</div>
 										) : null}
-										{!simplePlayer ? (
-											<div className='player-controls'>
-												<div className='player-seek'>
-													<span>{formatDuration(playerTime)}</span>
+										<div className='player-utility-bar'>
+											<div className='player-time-pill'>
+												<strong>{formatDuration(playerTime)}</strong>
+												<span>/ {formatDuration(playerDuration)}</span>
+											</div>
+											<div className='player-utility-actions'>
+												<button onClick={() => seekBy(-10)}>
+													<SkipBack size={15} />
+													10s
+												</button>
+												<button
+													className='primary'
+													onClick={() => {
+														const video = videoRef.current
+														if (!video) return
+														if (video.paused) video.play()
+														else video.pause()
+													}}
+												>
+													{videoRef.current?.paused ? (
+														<Play size={15} />
+													) : (
+														<Pause size={15} />
+													)}
+												</button>
+												<button onClick={() => seekBy(10)}>
+													<Forward size={15} />
+													10s
+												</button>
+												<label className='inline-control'>
+													<Volume2 size={15} />
 													<input
 														type='range'
-														min={0}
-														max={Math.max(1, Math.floor(playerDuration || 0))}
-														value={Math.floor(playerTime || 0)}
-														onChange={e => seekTo(e.target.value)}
-													/>
-													<span>{formatDuration(playerDuration)}</span>
-												</div>
-												<div className='player-control-row'>
-													<button onClick={() => seekBy(-10)}>
-														<SkipBack size={15} />
-													</button>
-													<button
-														className='primary'
-														onClick={() => {
-															const video = videoRef.current
-															if (!video) return
-															if (video.paused) video.play()
-															else video.pause()
-														}}
-													>
-														{videoRef.current?.paused ? (
-															<Play size={15} />
-														) : (
-															<Pause size={15} />
-														)}
-													</button>
-													<button onClick={() => seekBy(10)}>
-														<Forward size={15} />
-													</button>
-													<label className='inline-control'>
-														<Volume2 size={15} />
-														<input
-															type='range'
-															min='0'
-															max='1'
-															step='0.01'
-															value={playerVolume}
-															onChange={e => {
-																const next = Number(e.target.value || 0)
-																setPlayerVolume(next)
-																if (videoRef.current)
-																	videoRef.current.volume = next
-															}}
-														/>
-													</label>
-													<select
-														value={playerRate}
+														min='0'
+														max='1'
+														step='0.01'
+														value={playerVolume}
 														onChange={e => {
-															const next = Number(e.target.value || 1)
-															setPlayerRate(next)
-															if (videoRef.current)
-																videoRef.current.playbackRate = next
+															const next = Number(e.target.value || 0)
+															setPlayerVolume(next)
+															if (videoRef.current) videoRef.current.volume = next
 														}}
-													>
-														<option value='0.75'>0.75x</option>
-														<option value='1'>1x</option>
-														<option value='1.25'>1.25x</option>
-														<option value='1.5'>1.5x</option>
-														<option value='2'>2x</option>
-													</select>
-													<button onClick={toggleFullscreen}>
-														<Fullscreen size={15} />
-													</button>
-												</div>
+													/>
+												</label>
+												<select
+													value={playerRate}
+													onChange={e => {
+														const next = Number(e.target.value || 1)
+														setPlayerRate(next)
+														if (videoRef.current)
+															videoRef.current.playbackRate = next
+													}}
+												>
+													<option value='0.75'>0.75x</option>
+													<option value='1'>1x</option>
+													<option value='1.25'>1.25x</option>
+													<option value='1.5'>1.5x</option>
+													<option value='2'>2x</option>
+												</select>
 											</div>
-										) : null}
+										</div>
 									</div>
 								) : (
 									<div className='panel'>Bu format webda ko'rsatilmaydi</div>
 								)}
-								{!simplePlayer ? (
-									<div className='watch-meta panel'>
-										<div className='mini-row'>
-											<span>{watch.item?.code || '-'}</span>
-											<span>{watch.item?.year || '-'}</span>
-											<span>{watch.item?.quality || '-'}</span>
-											<span>
-												{(watch.item?.genres || []).join(', ') || '-'}
-											</span>
+								<div className='watch-surface'>
+									<div className='watch-title-row'>
+										<div className='watch-title-copy'>
+											<h3>{watch.item?.title}</h3>
+											<div className='watch-stat-line'>
+												<span>{watch.item?.code || 'MirTopKino'}</span>
+												<span>{watch.item?.likes || 0} like</span>
+												<span>{watch.item?.comments || 0} izoh</span>
+												<span>{watch.item?.downloads || 0} yuklab olish</span>
+											</div>
 										</div>
-										<ExpandableText
-											text={watch.item?.description}
-											limit={DESCRIPTION_LIMIT_WATCH}
-											className='watch-desc'
-										/>
-									</div>
-								) : null}
-								{!simplePlayer ? (
-									<div className='watch-actions'>
-										<button
-											className={
-												watch.item?.user_reaction === 'like' ? 'active' : ''
-											}
-											onClick={() => toggleContentReaction('like')}
-										>
-											<ThumbsUp size={15} />
-											{watch.item?.likes || 0}
-										</button>
-										<button
-											className={
-												watch.item?.user_reaction === 'dislike' ? 'active' : ''
-											}
-											onClick={() => toggleContentReaction('dislike')}
-										>
-											<ThumbsDown size={15} />
-											{watch.item?.dislikes || 0}
-										</button>
-										<button onClick={() => onShare(watch.item)}>
-											<Share2 size={15} />
-										</button>
-									</div>
-								) : null}
-								{watch.episodes?.length ? (
-									<div className='episode-row'>
-										{watch.episodes.map(ep => (
+										<div className='watch-actions'>
 											<button
-												key={ep.id || ep.episode_number}
 												className={
-													watch.current_episode === ep.episode_number
+													watch.item?.user_reaction === 'like' ? 'active' : ''
+												}
+												onClick={() => toggleContentReaction('like')}
+											>
+												<ThumbsUp size={15} />
+												{watch.item?.likes || 0}
+											</button>
+											<button
+												className={
+													watch.item?.user_reaction === 'dislike'
 														? 'active'
 														: ''
 												}
-												onClick={() => onWatch(watch.item, ep.episode_number)}
+												onClick={() => toggleContentReaction('dislike')}
 											>
-												{ep.episode_number}
+												<ThumbsDown size={15} />
+												{watch.item?.dislikes || 0}
 											</button>
+											<button
+												className={
+													favoriteMap.has(
+														`${watch.item?.content_type}:${watch.item?.id}`,
+													)
+														? 'active'
+														: ''
+												}
+												onClick={() => onFav(watch.item)}
+											>
+												<Bookmark size={15} />
+												Saqlash
+											</button>
+											<button onClick={() => onShare(watch.item)}>
+												<Share2 size={15} />
+												Ulashish
+											</button>
+											<button onClick={() => onDownload(watch.item)}>
+												<Download size={15} />
+												Yuklash
+											</button>
+										</div>
+									</div>
+									<div className='watch-chip-row'>
+										<span>{formatContentKind(watch.item?.content_type)}</span>
+										<span>{watch.item?.year || '-'}</span>
+										<span>{watch.item?.quality || '-'}</span>
+										{(watch.item?.genres || []).slice(0, 4).map(genre => (
+											<span key={genre}>{genre}</span>
 										))}
 									</div>
+									<ExpandableText
+										text={watch.item?.description}
+										limit={DESCRIPTION_LIMIT_WATCH}
+										className='watch-desc'
+									/>
+								</div>
+								{watch.episodes?.length ? (
+									<section className='watch-section'>
+										<div className='watch-section-head'>
+											<h3>Epizodlar</h3>
+											<small>{watch.episodes.length} ta</small>
+										</div>
+										<div className='episode-row'>
+											{watch.episodes.map(ep => (
+												<button
+													key={ep.id || ep.episode_number}
+													className={
+														watch.current_episode === ep.episode_number
+															? 'active'
+															: ''
+													}
+													onClick={() => onWatch(watch.item, ep.episode_number)}
+												>
+													Ep {ep.episode_number}
+												</button>
+											))}
+										</div>
+									</section>
 								) : null}
-							</section>
-							{!simplePlayer ? (
-								<aside>
-									<h4>Izohlar</h4>
+								<section className='watch-section watch-comments-panel'>
+									<div className='watch-section-head'>
+										<h3>Izohlar</h3>
+										<select
+											value={commentSort}
+											onChange={async e => {
+												setCommentSort(e.target.value)
+												await loadComments(
+													watch.item.content_type,
+													watch.item.id,
+													e.target.value,
+												)
+											}}
+										>
+											<option value='new'>Yangi</option>
+											<option value='top'>Top</option>
+											<option value='old'>Eski</option>
+										</select>
+									</div>
 									<div className='comment-write'>
 										<textarea
 											value={commentText}
 											onChange={e => setCommentText(e.target.value)}
+											placeholder='Fikr qoldiring...'
 										/>
 										<button onClick={sendMainComment}>
 											<Send size={14} />
 										</button>
 									</div>
-									<select
-										value={commentSort}
-										onChange={async e => {
-											setCommentSort(e.target.value)
-											await loadComments(
-												watch.item.content_type,
-												watch.item.id,
-												e.target.value,
-											)
-										}}
-									>
-										<option value='new'>Yangi</option>
-										<option value='top'>Top</option>
-										<option value='old'>Eski</option>
-									</select>
 									<div className='comment-list'>
 										{comments.length ? (
 											comments.map(c => (
@@ -2174,53 +2353,43 @@ export default function App() {
 															<small>{formatRelativeTime(c.created_at)}</small>
 															<p>{c.text}</p>
 															<div className='comment-actions'>
-																<button
-																	className={
-																		c.user_reaction === 'like' ? 'active' : ''
-																	}
-																	onClick={() =>
-																		onCommentReaction(
-																			c.id,
-																			c.user_reaction,
-																			'like',
-																		)
-																	}
-																>
-																	<ThumbsUp size={12} /> {c.likes || 0}
-																</button>
-																<button
-																	className={
-																		c.user_reaction === 'dislike'
-																			? 'active'
-																			: ''
-																	}
-																	onClick={() =>
-																		onCommentReaction(
-																			c.id,
-																			c.user_reaction,
-																			'dislike',
-																		)
-																	}
-																>
-																	<ThumbsDown size={12} /> {c.dislikes || 0}
-																</button>
-																<button
-																	onClick={() =>
-																		setReplyTarget(
-																			replyTarget === c.id ? '' : c.id,
-																		)
-																	}
-																>
-																	<Reply size={12} />
-																</button>
-																{c.can_delete ||
-																Number(c.user_tg_id || 0) ===
-																	Number(boot?.user?.id || 0) ||
-																isAdmin ? (
-																	<button onClick={() => removeComment(c.id)}>
-																		<Trash2 size={12} />
-																	</button>
-																) : null}
+										<button
+											className={
+												c.user_reaction === 'like' ? 'active' : ''
+											}
+											onClick={() =>
+												onCommentReaction(c.id, c.user_reaction, 'like')
+											}
+										>
+											<ThumbsUp size={12} /> {c.likes || 0}
+										</button>
+										<button
+											className={
+												c.user_reaction === 'dislike' ? 'active' : ''
+											}
+											onClick={() =>
+												onCommentReaction(c.id, c.user_reaction, 'dislike')
+											}
+										>
+											<ThumbsDown size={12} /> {c.dislikes || 0}
+										</button>
+										<button
+											onClick={() =>
+												setReplyTarget(replyTarget === c.id ? '' : c.id)
+											}
+										>
+											<Reply size={12} />
+										</button>
+										{c.can_delete ||
+										Number(c.user_tg_id || 0) ===
+											Number(boot?.user?.id || 0) ||
+										isAdmin ? (
+											<button
+												onClick={() => removeComment(c.id)}
+											>
+												<Trash2 size={12} />
+											</button>
+										) : null}
 															</div>
 														</div>
 													</div>
@@ -2310,32 +2479,90 @@ export default function App() {
 											</div>
 										)}
 									</div>
-									<h4>Tavsiyalar</h4>
-									<div className='recommend-list'>
-										{recommendationFeed.similar?.length ? (
-											recommendationFeed.similar.map(r => (
-												<button
-													key={`${r.content_type}:${r.id}`}
-													onClick={() => onWatch(r)}
-												>
-													{r.title}
-												</button>
-											))
-										) : recommendations.length ? (
-											recommendations.map(r => (
-												<button
-													key={`${r.content_type}:${r.id}`}
-													onClick={() => onWatch(r)}
-												>
-													{r.title}
-												</button>
-											))
-										) : (
-											<div className='empty-block'>Tavsiyalar topilmadi.</div>
-										)}
-									</div>
-								</aside>
-							) : null}
+								</section>
+							</section>
+							<aside className='watch-sidebar'>
+								{watchSidebarPrimaryRows.length ? (
+									<section className='watch-side-block'>
+										<div className='watch-section-head'>
+											<h3>Keyingi videolar</h3>
+											<small>{watchSidebarPrimaryRows.length} ta</small>
+										</div>
+										<div className='watch-rail-list'>
+											{watchSidebarPrimaryRows.map(item => (
+												<MediaShelfCard
+													key={`${item.content_type}:${item.id}`}
+													item={item}
+													initData={initData}
+													mediaToken={mediaToken}
+													onClick={() => onWatch(item)}
+												/>
+											))}
+										</div>
+									</section>
+								) : null}
+								{watchSidebarContinueRows.length ? (
+									<section className='watch-side-block'>
+										<div className='watch-section-head'>
+											<h3>Davom ettirish</h3>
+											<small>Oxirgi ko'rilganlar</small>
+										</div>
+										<div className='watch-rail-list'>
+											{watchSidebarContinueRows.map(item => (
+												<MediaShelfCard
+													key={`${item.content_type}:${item.id}`}
+													item={item}
+													initData={initData}
+													mediaToken={mediaToken}
+													onClick={() =>
+														onWatch(
+															item,
+															item.watch_progress?.episode_number ?? null,
+														)
+													}
+													progressPercent={Math.min(
+														100,
+														Math.max(
+															0,
+															Math.round(
+																((Number(
+																	item.watch_progress?.position_seconds || 0,
+																) || 0) /
+																	Math.max(
+																		1,
+																		Number(
+																			item.watch_progress?.duration_seconds || 0,
+																		),
+																	)) *
+																	100,
+															),
+														),
+													)}
+												/>
+											))}
+										</div>
+									</section>
+								) : null}
+								{watchSidebarTrendRows.length ? (
+									<section className='watch-side-block'>
+										<div className='watch-section-head'>
+											<h3>Trend</h3>
+											<small>Hozir mashhur</small>
+										</div>
+										<div className='watch-rail-list'>
+											{watchSidebarTrendRows.map(item => (
+												<MediaShelfCard
+													key={`${item.content_type}:${item.id}`}
+													item={item}
+													initData={initData}
+													mediaToken={mediaToken}
+													onClick={() => onWatch(item)}
+												/>
+											))}
+										</div>
+									</section>
+								) : null}
+							</aside>
 						</div>
 					</div>
 				</section>

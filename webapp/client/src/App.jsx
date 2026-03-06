@@ -130,6 +130,16 @@ function formatContentKind(contentType) {
 	return 'Kino'
 }
 
+function normalizeTelegramLink(url) {
+	const text = String(url || '').trim()
+	if (!text) return ''
+	if (text.startsWith('tg://') || text.startsWith('http://') || text.startsWith('https://')) {
+		return text
+	}
+	if (text.startsWith('t.me/')) return `https://${text}`
+	return text
+}
+
 function clamp(value, min, max) {
 	return Math.min(max, Math.max(min, value))
 }
@@ -441,7 +451,7 @@ function Card({
 				) : null}
 				<span className='play-chip'>
 					<Play size={14} />
-					Tomosha
+					Botda ko'rish
 				</span>
 			</button>
 			<div className='card-body'>
@@ -562,7 +572,7 @@ function HeroBanner({ item, initData, mediaToken, onWatch, onShare }) {
 					<div className='hero-actions'>
 						<button className='primary' onClick={() => onWatch(safeItem)}>
 							<Play size={16} />
-							Tomosha
+							Botda ochish
 						</button>
 						<button onClick={() => onShare(safeItem)}>
 							<Share2 size={16} />
@@ -668,7 +678,7 @@ function MediaShelfCard({
 				)}
 				<span className='media-shelf-chip'>
 					<Play size={12} />
-					Ko'rish
+					Botda
 				</span>
 				{progressPercent > 0 ? (
 					<span className='media-shelf-progress'>
@@ -1203,6 +1213,30 @@ export default function App() {
 		}
 	}
 
+	function openInBot(item) {
+		const deepLink = normalizeTelegramLink(item?.deep_link)
+		if (!deepLink) {
+			showFlash('Bot link topilmadi')
+			return
+		}
+		const tg = window.Telegram?.WebApp
+		try {
+			if (deepLink.startsWith('https://t.me/') || deepLink.startsWith('http://t.me/')) {
+				tg?.openTelegramLink?.(deepLink)
+				if (!tg?.openTelegramLink) {
+					window.open(deepLink, '_blank', 'noopener,noreferrer')
+				}
+				return
+			}
+			tg?.openLink?.(deepLink)
+			if (!tg?.openLink) {
+				window.open(deepLink, '_blank', 'noopener,noreferrer')
+			}
+		} catch {
+			window.open(deepLink, '_blank', 'noopener,noreferrer')
+		}
+	}
+
 	async function loadComments(
 		contentTypeValue,
 		contentRefValue,
@@ -1218,6 +1252,10 @@ export default function App() {
 	}
 
 	async function onWatch(item, episode = null, options = {}) {
+		const _ = episode
+		const __ = options
+		openInBot(item)
+		return
 		const canRecommend =
 			item.content_type === 'movie' || item.content_type === 'serial'
 		const recommendationTask = canRecommend

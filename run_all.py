@@ -10,14 +10,13 @@ def _log(message: str) -> None:
 
 
 def _public_url() -> str:
-    explicit = os.getenv("WEBAPP_URL", "").strip()
-    if explicit:
-        return explicit
-    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    if railway_domain:
-        if railway_domain.startswith("http://") or railway_domain.startswith("https://"):
-            return railway_domain
-        return f"https://{railway_domain}"
+    for env_name in ("PUBLIC_URL", "RENDER_EXTERNAL_URL", "RAILWAY_PUBLIC_DOMAIN"):
+        value = os.getenv(env_name, "").strip()
+        if not value:
+            continue
+        if value.startswith(("http://", "https://")):
+            return value
+        return f"https://{value}"
     return ""
 
 
@@ -39,35 +38,26 @@ def main() -> int:
     public_url = _public_url()
 
     _log("==============================================================")
-    _log("[boot] Mir-bot unified service starting")
+    _log("[boot] Kino bot web-service mode starting")
     _log(f"[boot] Python: {sys.version.split()[0]}")
-    _log(f"[boot] WEB API listen: {web_host}:{web_port}")
+    _log(f"[boot] Health server listen: {web_host}:{web_port}")
     if public_url:
         _log(f"[boot] Public URL: {public_url}")
         _log(f"[boot] Health URL: {public_url.rstrip('/')}/health")
     else:
         _log("[boot] Public URL: (not set)")
-    _log("[boot] Starting: FastAPI + Telegram bot in one service")
+    _log("[boot] Starting: health server + Telegram bot")
     _log("==============================================================")
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    api_cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "webapp.server.app:app",
-        "--host",
-        web_host,
-        "--port",
-        str(web_port),
-    ]
+    web_cmd = [sys.executable, "render_health.py"]
     bot_cmd = [sys.executable, "main.py"]
 
-    api_proc = subprocess.Popen(api_cmd, env=env)
+    web_proc = subprocess.Popen(web_cmd, env=env)
     bot_proc = subprocess.Popen(bot_cmd, env=env)
-    _log(f"[boot] webapi pid={api_proc.pid}")
+    _log(f"[boot] health pid={web_proc.pid}")
     _log(f"[boot] bot pid={bot_proc.pid}")
 
     stopped = {"done": False}
@@ -78,7 +68,7 @@ def main() -> int:
         stopped["done"] = True
         _log(f"[signal] received {signum}, stopping children...")
         _terminate_process("bot", bot_proc)
-        _terminate_process("webapi", api_proc)
+        _terminate_process("health", web_proc)
         raise SystemExit(0)
 
     signal.signal(signal.SIGINT, _graceful_exit)
@@ -86,16 +76,16 @@ def main() -> int:
         signal.signal(signal.SIGTERM, _graceful_exit)
 
     while True:
-        api_code = api_proc.poll()
+        web_code = web_proc.poll()
         bot_code = bot_proc.poll()
 
-        if api_code is not None:
-            _log(f"[exit] webapi stopped with code={api_code}")
+        if web_code is not None:
+            _log(f"[exit] health stopped with code={web_code}")
             _terminate_process("bot", bot_proc)
-            return api_code
+            return web_code
         if bot_code is not None:
             _log(f"[exit] bot stopped with code={bot_code}")
-            _terminate_process("webapi", api_proc)
+            _terminate_process("health", web_proc)
             return bot_code
 
         time.sleep(1)

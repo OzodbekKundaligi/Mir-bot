@@ -34,7 +34,6 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bson import ObjectId
@@ -267,6 +266,7 @@ class Database:
             "preview_media_type": movie.preview_media_type.strip(),
             "preview_file_id": movie.preview_file_id.strip(),
             "downloads": 0,
+            "views": 0,
             "title_norm": self._normalize_lookup(movie.title),
             "created_at": now,
         }
@@ -295,6 +295,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "downloads": 1,
+                "views": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -317,6 +318,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "downloads": 1,
+                "views": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -389,6 +391,20 @@ class Database:
             },
         )
 
+    def increment_movie_views(self, movie_id: str, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        movie_object_id = self._to_object_id(movie_id)
+        if not movie_object_id:
+            return
+        self.movies.update_one(
+            {"_id": movie_object_id},
+            {
+                "$inc": {"views": amount},
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
     def increment_serial_downloads(self, serial_id: str, amount: int = 1) -> None:
         if amount <= 0:
             return
@@ -399,6 +415,20 @@ class Database:
             {"_id": serial_object_id},
             {
                 "$inc": {"downloads": amount},
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
+    def increment_serial_views(self, serial_id: str, amount: int = 1) -> None:
+        if amount <= 0:
+            return
+        serial_object_id = self._to_object_id(serial_id)
+        if not serial_object_id:
+            return
+        self.serials.update_one(
+            {"_id": serial_object_id},
+            {
+                "$inc": {"views": amount},
                 "$set": {"updated_at": utc_now_iso()},
             },
         )
@@ -428,6 +458,7 @@ class Database:
             "preview_file_id": "",
             "preview_photo_file_id": "",
             "downloads": 0,
+            "views": 0,
             "created_at": now,
         }
         try:
@@ -482,6 +513,7 @@ class Database:
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
                 "downloads": 1,
+                "views": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -500,6 +532,7 @@ class Database:
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
                 "downloads": 1,
+                "views": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -632,6 +665,7 @@ class Database:
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
                 "downloads": 1,
+                "views": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -651,6 +685,7 @@ class Database:
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
                 "downloads": 1,
+                "views": 1,
                 "created_at": 1,
             },
         ).sort("created_at", DESCENDING).limit(300)
@@ -1099,10 +1134,6 @@ class SearchState(StatesGroup):
     waiting_query = State()
 
 
-class FilterState(StatesGroup):
-    waiting_input = State()
-
-
 def parse_admin_ids(value: str) -> list[int]:
     result: list[int] = []
     for raw in value.split(","):
@@ -1130,9 +1161,7 @@ BTN_BACK = "⬅️ Ortga"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
 BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
-BTN_FILTER = "🎛 Filter"
 BTN_FAVORITES = "⭐ Sevimlilarim"
-BTN_WEBAPP = "🌐 Web ilova"
 BOT_SIGNATURE = "@MirTopKinoBot"
 
 
@@ -1191,24 +1220,17 @@ def is_serial_done_text(value: str | None) -> bool:
 
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    webapp_btn = (
-        KeyboardButton(text=BTN_WEBAPP, web_app=WebAppInfo(url=WEBAPP_URL))
-        if WEBAPP_URL
-        else KeyboardButton(text=BTN_WEBAPP)
-    )
     if is_admin:
         return ReplyKeyboardMarkup(
             keyboard=[
                 [KeyboardButton(text=BTN_ADMIN_PANEL)],
-                [webapp_btn],
             ],
             resize_keyboard=True,
         )
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_FILTER)],
+            [KeyboardButton(text=BTN_SEARCH_NAME)],
             [KeyboardButton(text=BTN_FAVORITES)],
-            [webapp_btn],
         ],
         resize_keyboard=True,
     )
@@ -1319,36 +1341,6 @@ def parse_metadata_input(value: str) -> dict[str, Any] | None:
         genres = sorted(dict.fromkeys(genres))[:10]
 
     return {"year": year, "quality": quality, "genres": genres}
-
-
-def parse_filter_input(value: str) -> dict[str, Any] | None:
-    raw = value.strip()
-    if not raw:
-        return None
-    parts = [part.strip() for part in raw.split("|")]
-    if len(parts) != 3:
-        return None
-    genres_part, year_part, quality_part = parts
-
-    genres: list[str] = []
-    if genres_part and genres_part != "-":
-        genres = [genre.strip().lower() for genre in genres_part.split(",") if genre.strip()]
-        genres = sorted(dict.fromkeys(genres))[:10]
-
-    year: int | None = None
-    if year_part and year_part != "-":
-        if not year_part.isdigit():
-            return None
-        year = int(year_part)
-        now_year = datetime.now(UTC).year
-        if year < 1900 or year > now_year + 1:
-            return None
-
-    quality = ""
-    if quality_part and quality_part != "-":
-        quality = quality_part[:40]
-
-    return {"genres": genres, "year": year, "quality": quality}
 
 
 def encode_payload_value(value: str) -> str:
@@ -1509,41 +1501,6 @@ def build_favorites_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup | No
     return markup
 
 
-def build_filter_page_kb(
-    items: list[dict[str, Any]],
-    page: int,
-    page_size: int = 8,
-) -> InlineKeyboardMarkup | None:
-    if not items:
-        return None
-    total_pages = max(1, (len(items) + page_size - 1) // page_size)
-    page = max(0, min(page, total_pages - 1))
-    start = page * page_size
-    chunk = items[start:start + page_size]
-
-    builder = InlineKeyboardBuilder()
-    for item in chunk:
-        content_type = str(item.get("content_type") or "")
-        content_ref = str(item.get("id") or "")
-        title = str(item.get("title") or "Noma'lum")
-        code = str(item.get("code") or "")
-        short = f"{code} - {title}" if code else title
-        if len(short) > 58:
-            short = f"{short[:55]}..."
-        icon = "🎬" if content_type == "movie" else "📺"
-        builder.button(text=f"{icon} {short}", callback_data=f"open:{content_type}:{content_ref}")
-    builder.adjust(1)
-
-    nav_row: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"filter_page:{page - 1}"))
-    nav_row.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="filter_page:noop"))
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"filter_page:{page + 1}"))
-    builder.row(*nav_row)
-    return builder.as_markup()
-
-
 def append_signature(caption: str | None) -> str:
     base = (caption or "").strip()
     if base:
@@ -1575,6 +1532,15 @@ def build_movie_caption(title: str | None, description: str | None) -> str:
     if title_text and description_text:
         return f"{title_text}\n\n{description_text}"
     return title_text or description_text
+
+
+def append_views_to_caption(caption: str | None, views: int | None) -> str:
+    views_count = max(0, int(views or 0))
+    views_line = f"👁 Ko'rishlar: {views_count}"
+    base = (caption or "").strip()
+    if base:
+        return f"{base}\n\n{views_line}"
+    return views_line
 
 
 def build_serial_caption(
@@ -1881,6 +1847,7 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
     is_favorite = bool(requester_id and db.is_favorite(requester_id, "serial", serial["id"]))
+    displayed_views = int(serial.get("views") or 0) + 1
     serial_caption = build_serial_caption(
         serial["title"],
         serial["description"],
@@ -1889,10 +1856,12 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
         quality=str(serial.get("quality") or ""),
         genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
+    serial_caption = append_views_to_caption(serial_caption, displayed_views)
     await message.answer(
         f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
         reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers, is_favorite=is_favorite),
     )
+    db.increment_serial_views(serial["id"])
     return True
 
 
@@ -1967,12 +1936,14 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if not movie:
         await message.answer("❌ Kino topilmadi.")
         return False
+    displayed_views = int(movie.get("views") or 0) + 1
     caption = append_meta_to_caption(
         build_movie_caption(movie["title"], movie["description"]),
         movie.get("year") if isinstance(movie.get("year"), int) else None,
         str(movie.get("quality") or ""),
         [str(g) for g in movie.get("genres", []) if str(g).strip()],
     )
+    caption = append_views_to_caption(caption, displayed_views)
     requester_id = user_id
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
@@ -1987,6 +1958,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
             is_favorite=is_favorite,
         ),
     )
+    db.increment_movie_views(movie["id"])
     db.increment_movie_downloads(movie["id"])
     return True
 
@@ -2087,7 +2059,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "7903688837,7546181748"))
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://mir-bot-production.up.railway.app/").strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi. .env faylga BOT_TOKEN yozing.")
@@ -2150,44 +2121,6 @@ async def ask_for_subscription(message: Message, channels: list[dict[str, Any]])
     await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
 
 
-def reduce_result_items(items: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
-    reduced: list[dict[str, Any]] = []
-    for row in items[: max(1, limit)]:
-        reduced.append(
-            {
-                "content_type": str(row.get("content_type") or ""),
-                "id": str(row.get("id") or ""),
-                "code": str(row.get("code") or ""),
-                "title": str(row.get("title") or ""),
-                "year": row.get("year"),
-                "quality": str(row.get("quality") or ""),
-            }
-        )
-    return reduced
-
-
-async def send_filter_page_message(
-    message: Message,
-    results: list[dict[str, Any]],
-    page: int,
-) -> None:
-    total = len(results)
-    if total == 0:
-        await message.answer("📭 Filter bo'yicha kontent topilmadi.")
-        return
-    total_pages = max(1, (total + 8 - 1) // 8)
-    safe_page = max(0, min(page, total_pages - 1))
-    text = (
-        f"🎛 Filter natijalari: {total} ta\n"
-        f"Sahifa: {safe_page + 1}/{total_pages}\n"
-        "Kerakli kontentni tanlang:"
-    )
-    await message.answer(
-        text,
-        reply_markup=build_filter_page_kb(results, safe_page),
-    )
-
-
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
@@ -2223,7 +2156,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     text = (
         "🎬 Assalomu alaykum, Kino Qidiruvi Botga xush kelibsiz!\n\n"
         "🔎 Kino yoki serial kodini yuboring.\n"
-        "Yoki tugmalar orqali nom bo'yicha qidiruv, filter va sevimlilarni ishlating."
+        "Yoki tugmalar orqali nom bo'yicha qidiruv va sevimlilarni ishlating."
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
 
@@ -2283,17 +2216,6 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer("🏠 Asosiy menyu", reply_markup=main_menu_kb(True))
-
-
-@router.message(F.text.in_({BTN_WEBAPP, "Web ilova"}))
-async def open_webapp_entry(message: Message) -> None:
-    if not WEBAPP_URL:
-        await message.answer("⚠️ WEBAPP_URL sozlanmagan.")
-        return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🌐 Web ilovani ochish", web_app=WebAppInfo(url=WEBAPP_URL))]]
-    )
-    await message.answer("🌐 Ilovani ochish uchun tugmani bosing:", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_SUBS, "Majburiy obuna"}))
@@ -3724,72 +3646,6 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text.in_({BTN_FILTER, "Filter"}))
-async def filter_start(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        return
-    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
-    if not ok:
-        await ask_for_subscription(message, channels)
-        return
-    await state.set_state(FilterState.waiting_input)
-    await message.answer(
-        "🎛 Filter formatini yuboring: janrlar|yil|sifat\n"
-        "Masalan: action,drama|2024|1080p\n"
-        "Keraksiz maydon uchun `-` yozing.\n"
-        "Masalan: -|2023|-\n"
-        "Bekor qilish: ❌ Bekor qilish",
-        reply_markup=cancel_kb(),
-    )
-
-
-@router.message(FilterState.waiting_input)
-async def filter_finish(message: Message, state: FSMContext) -> None:
-    if not message.from_user:
-        await state.clear()
-        return
-    text = (message.text or "").strip()
-    if is_cancel_text(text):
-        await state.clear()
-        await message.answer(
-            "❌ Bekor qilindi.",
-            reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
-        )
-        return
-
-    parsed = parse_filter_input(text)
-    if parsed is None:
-        await message.answer(
-            "⚠️ Format noto'g'ri.\n"
-            "To'g'ri format: janrlar|yil|sifat\n"
-            "Masalan: action,drama|2024|1080p\n"
-            "Yoki: -|2024|-"
-        )
-        return
-
-    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
-    if not ok:
-        await ask_for_subscription(message, channels)
-        return
-
-    results = db.search_content(
-        query="",
-        limit=100,
-        year=parsed["year"],
-        quality=parsed["quality"],
-        genres=parsed["genres"],
-    )
-    reduced = reduce_result_items(results, limit=100)
-    await state.set_state(None)
-    await state.set_data(
-        {
-            "filter_results": reduced,
-            "filter_page": 0,
-        }
-    )
-    await send_filter_page_message(message, reduced, page=0)
-
-
 @router.message(F.text.in_({BTN_FAVORITES, "Sevimlilarim"}))
 async def list_favorites(message: Message) -> None:
     if not message.from_user:
@@ -3802,47 +3658,6 @@ async def list_favorites(message: Message) -> None:
         f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
         reply_markup=build_favorites_kb(favorites),
     )
-
-
-@router.callback_query(F.data.startswith("filter_page:"))
-async def filter_page(callback: CallbackQuery, state: FSMContext) -> None:
-    if not callback.message:
-        await callback.answer()
-        return
-    _, raw_page = callback.data.split(":", 1)
-    if raw_page == "noop":
-        await callback.answer()
-        return
-    if not raw_page.isdigit():
-        await callback.answer("Xatolik")
-        return
-
-    page = int(raw_page)
-    data = await state.get_data()
-    results = data.get("filter_results", [])
-    if not isinstance(results, list) or not results:
-        await callback.answer("Natijalar topilmadi", show_alert=True)
-        return
-    total = len(results)
-    total_pages = max(1, (total + 8 - 1) // 8)
-    safe_page = max(0, min(page, total_pages - 1))
-    await state.update_data(filter_page=safe_page)
-    text = (
-        f"🎛 Filter natijalari: {total} ta\n"
-        f"Sahifa: {safe_page + 1}/{total_pages}\n"
-        "Kerakli kontentni tanlang:"
-    )
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=build_filter_page_kb(results, safe_page),
-        )
-    except TelegramBadRequest:
-        await callback.message.answer(
-            text,
-            reply_markup=build_filter_page_kb(results, safe_page),
-        )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "req_create")
@@ -4070,12 +3885,12 @@ async def inline_search(inline_query: InlineQuery) -> None:
         year = item.get("year")
         quality = str(item.get("quality") or "")
         meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
-        downloads = int(item.get("downloads") or 0)
+        views = int(item.get("views") or 0)
 
         article_title = title
         if isinstance(year, int):
             article_title = f"{article_title} ({year})"
-        description = f"Yuklashlar: {downloads}"
+        description = f"Ko'rishlar: {views}"
 
         content_text = f"{title}\nKod: {code or '-'}"
         if meta:
@@ -4178,9 +3993,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_CANCEL.lower(),
         BTN_SERIAL_DONE.lower(),
         BTN_SEARCH_NAME.lower(),
-        BTN_FILTER.lower(),
         BTN_FAVORITES.lower(),
-        BTN_WEBAPP.lower(),
         "admin panel",
         "majburiy obuna",
         "kino qo'shish",
@@ -4199,9 +4012,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "serialni yakunlash",
         "bekor qilish",
         "nom bo'yicha qidirish",
-        "filter",
         "sevimlilarim",
-        "web ilova",
     }
     if text.lower() in protected_words:
         return
@@ -4247,29 +4058,10 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         )
         return
 
-    episodes = db.list_serial_episodes(serial["id"])
-    if not episodes:
+    sent = await send_serial_selector_by_id(message, serial["id"], message.from_user.id)
+    if not sent:
         db.log_request(message.from_user.id, code, "serial_no_episodes")
-        await message.answer("📭 Bu serialga hali qism qo'shilmagan.")
         return
-
-    episode_numbers = [row["episode_number"] for row in episodes]
-    serial_caption = build_serial_caption(
-        serial["title"],
-        serial["description"],
-        episodes_count=len(episode_numbers),
-        year=serial.get("year") if isinstance(serial.get("year"), int) else None,
-        quality=str(serial.get("quality") or ""),
-        genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
-    )
-    await message.answer(
-        f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
-        reply_markup=build_serial_episodes_kb(
-            serial["id"],
-            episode_numbers,
-            is_favorite=db.is_favorite(message.from_user.id, "serial", serial["id"]),
-        ),
-    )
     data = await state.get_data()
     cleaned = dict(data)
     cleaned.pop("pending_request_query", None)
@@ -4280,8 +4072,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
 
 async def main() -> None:
     logging.info("Bot polling ishga tushmoqda...")
-    logging.info("WEBAPP_URL: %s", WEBAPP_URL or "(bo'sh)")
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties())
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     await dp.start_polling(bot)

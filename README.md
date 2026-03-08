@@ -8,13 +8,15 @@ Bu bot kino yoki serial kod orqali media beradigan Telegram bot.
 - Admin qo'ygan kanallarga **majburiy obuna** tekshiradi.
 - Obuna tasdiqlansa foydalanuvchi kodni chatga yozadi.
 - Kod topilsa kino yoki serial qismlari yuboriladi.
+- Kino ochilganda **ko'rishlar soni** ko'rinadi.
 - Topilmagan kod/nom uchun user **so'rov qoldira oladi**.
 - Admin kontent qo'shganda so'rov qoldirgan userlarga **avto xabar yuboradi**.
-- **Nom bo'yicha qidiruv**, **janr/yil/sifat filter**, **sevimlilar** qo'shilgan.
+- **Nom bo'yicha qidiruv** va **sevimlilar** qo'shilgan.
 - **Inline mode**: `@botusername qidiruv`.
-- Inline'da kod bo'yicha qidiruv, typo-ga yaqin natijalar, yuklashlar soni va kontentning o'zidan olingan preview chiqadi.
+- Inline'da kod bo'yicha qidiruv, typo-ga yaqin natijalar va ko'rishlar soni chiqadi.
 - Admin boshqaruvi `/admin` orqali emas, **`Admin panel`** tugmasi orqali.
 - Bir nechta admin (`ADMIN_IDS`) qo'llab-quvvatlanadi.
+- Botda `protect_content` o'chirilgan, shuning uchun user media'ni **saqlab olishi** mumkin.
 
 ## O'rnatish
 
@@ -38,25 +40,24 @@ New-Item .env -ItemType File
 python main.py
 ```
 
-## Telegram Web App
+## Render Web Service
 
-Web App alohida papkada:
+Render'da **Web Service** qilib ishlatish uchun loyiha tayyor:
 
-- `webapp/client` - React frontend
-- `webapp/server` - FastAPI backend
+- start command: `python run_all.py`
+- ichida bir vaqtda:
+  - Telegram bot polling
+  - kichik health server (`/health`)
+- Render health check uchun:
+  - `/`
+  - `/health`
 
-Batafsil yo'riqnoma: `webapp/README.md`
+Muhim ENV:
 
-Web App funksiyalari:
-
-- Like / dislike
-- Comment
-- Saqlanganlar
-- Yuklab olish tracking
-- Tarix
-- Trendlar
-- O'xshash kontent tavsiyasi
-- Profil statistikasi
+- `BOT_TOKEN`
+- `ADMIN_IDS`
+- `MONGODB_URI`
+- `MONGODB_DB`
 
 ## Docker / Procfile
 
@@ -64,25 +65,22 @@ Deploy uchun tayyor fayllar:
 
 - `Procfile`
 - `Procfile.bot`
-- `Procfile.web`
-- `Dockerfile` (bot)
+- `Dockerfile` (Render web service)
 - `Dockerfile.bot` (bot)
-- `webapp/server/Dockerfile` (API)
-- `webapp/client/Dockerfile` (frontend)
-- `docker-compose.yml` (lokal full stack)
+- `docker-compose.yml` (lokal bot + mongo)
 
-`Procfile` va `Dockerfile` hozir **bitta Railway service** uchun sozlangan:
+`Procfile` va `Dockerfile` hozir **bitta web service** uchun sozlangan:
 
 - `python run_all.py` ishga tushadi
 - ichida bir paytda:
-  - FastAPI (`PORT` da)
+  - health server (`PORT` da)
   - Telegram bot polling
 
 Logda quyilar ko'rinadi:
 
-- `WEB API listen: ...`
+- `Health server listen: ...`
 - `Public URL: ...`
-- `webapi pid=...`
+- `health pid=...`
 - `bot pid=...`
 
 Lokal ishga tushirish:

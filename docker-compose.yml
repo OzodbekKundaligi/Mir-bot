@@ -22,35 +22,5 @@ services:
       - MONGODB_URI=mongodb://mongo:27017
     command: python main.py
 
-  webapi:
-    build:
-      context: .
-      dockerfile: webapp/server/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      - mongo
-    env_file:
-      - .env
-    environment:
-      - MONGODB_URI=mongodb://mongo:27017
-      - WEBAPP_ALLOWED_ORIGINS=http://localhost:4173
-      - PORT=8000
-    ports:
-      - "8000:8000"
-
-  webclient:
-    build:
-      context: .
-      dockerfile: webapp/client/Dockerfile
-      args:
-        VITE_API_BASE: http://localhost:8000
-    restart: unless-stopped
-    depends_on:
-      - webapi
-    environment:
-      - PORT=4173
-    ports:
-      - "4173:4173"
-
 volumes:
   mongo_data:

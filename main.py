@@ -2982,6 +2982,14 @@ def parse_movie_payload(payload: str | None) -> str | None:
     return movie_id or None
 
 
+def parse_web_action_payload(payload: str | None) -> str | None:
+    value = (payload or "").strip()
+    if not value.startswith("wa_"):
+        return None
+    action = value[3:].strip()
+    return action or None
+
+
 def build_start_deeplink(username: str, payload: str) -> str:
     return f"https://t.me/{username}?start={payload}"
 
@@ -3508,6 +3516,107 @@ async def ask_for_subscription(message: Message, channels: list[dict[str, Any]])
     await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
 
 
+async def dispatch_web_action(
+    message: Message,
+    state: FSMContext,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> bool:
+    if not message.from_user:
+        return False
+
+    payload = payload or {}
+    action = str(action or "").strip()
+    if not action:
+        return False
+
+    if action == "open_content":
+        content_type = str(payload.get("content_type") or "").strip()
+        content_ref = str(payload.get("content_ref") or "").strip()
+        if content_type not in {"movie", "serial"} or not content_ref:
+            await message.answer("Kontent topilmadi.")
+            return True
+        ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+        if not ok:
+            await ask_for_subscription(message, channels)
+            return True
+        if content_type == "movie":
+            try:
+                sent = await send_movie_by_id(message, content_ref, message.from_user.id)
+            except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                sent = False
+            if not sent:
+                await message.answer("Kino topilmadi.")
+            return True
+        try:
+            sent = await send_serial_selector_by_id(message, content_ref, message.from_user.id)
+        except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+            sent = False
+        if not sent:
+            await message.answer("Serial topilmadi.")
+        return True
+
+    if action == "open_pro":
+        await pro_buy(message)
+        return True
+
+    if action == "open_notifications":
+        await notification_settings(message)
+        return True
+
+    if action in {
+        "open_admin_panel",
+        "admin_subs",
+        "admin_add_movie",
+        "admin_add_serial",
+        "admin_delete_content",
+        "admin_edit_content",
+        "admin_list_content",
+        "admin_broadcast",
+        "admin_requests",
+        "admin_stats",
+        "admin_add_admin",
+    }:
+        if not guard_admin(message):
+            await message.answer("Admin huquqi kerak.")
+            return True
+        if action == "open_admin_panel":
+            await open_admin_panel(message, state)
+            return True
+        if action == "admin_subs":
+            await mandatory_subscriptions_menu(message)
+            return True
+        if action == "admin_add_movie":
+            await add_movie_start(message, state)
+            return True
+        if action == "admin_add_serial":
+            await add_serial_start(message, state)
+            return True
+        if action == "admin_delete_content":
+            await delete_movie_start(message, state)
+            return True
+        if action == "admin_edit_content":
+            await edit_content_start(message, state)
+            return True
+        if action == "admin_list_content":
+            await movie_list(message)
+            return True
+        if action == "admin_broadcast":
+            await broadcast_start(message, state)
+            return True
+        if action == "admin_requests":
+            await requests_dashboard(message)
+            return True
+        if action == "admin_stats":
+            await stats(message)
+            return True
+        if action == "admin_add_admin":
+            await add_admin_start(message, state)
+            return True
+
+    return False
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
@@ -3515,9 +3624,13 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     db.add_user(message.from_user.id, message.from_user.full_name)
     payload = parse_start_payload(message.text)
+    web_action = parse_web_action_payload(payload)
     serial_id = parse_serial_payload(payload)
     movie_id = parse_movie_payload(payload)
-    if serial_id:
+    if web_action:
+        if await dispatch_web_action(message, state, web_action, {"action": web_action}):
+            return
+    elif serial_id:
         ok, channels = await ensure_subscription(message.from_user.id, message.bot)
         if not ok:
             await state.update_data(pending_serial_id=serial_id)
@@ -3582,38 +3695,7 @@ async def handle_web_app_data(message: Message, state: FSMContext) -> None:
         return
 
     action = str(payload.get("action") or "").strip()
-    if action == "open_content":
-        content_type = str(payload.get("content_type") or "").strip()
-        content_ref = str(payload.get("content_ref") or "").strip()
-        if content_type not in {"movie", "serial"} or not content_ref:
-            await message.answer("Kontent topilmadi.")
-            return
-        ok, channels = await ensure_subscription(message.from_user.id, message.bot)
-        if not ok:
-            await ask_for_subscription(message, channels)
-            return
-        if content_type == "movie":
-            try:
-                sent = await send_movie_by_id(message, content_ref, message.from_user.id)
-            except (TelegramBadRequest, TelegramForbiddenError, ValueError):
-                sent = False
-            if not sent:
-                await message.answer("Kino topilmadi.")
-            return
-        try:
-            sent = await send_serial_selector_by_id(message, content_ref, message.from_user.id)
-        except (TelegramBadRequest, TelegramForbiddenError, ValueError):
-            sent = False
-        if not sent:
-            await message.answer("Serial topilmadi.")
-        return
-
-    if action == "open_pro":
-        await pro_buy(message)
-        return
-
-    if action == "open_notifications":
-        await notification_settings(message)
+    if await dispatch_web_action(message, state, action, payload):
         return
 
     await message.answer("Ilova bu amalni yubordi, lekin bot uni tanimadi.")

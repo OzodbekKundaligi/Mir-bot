@@ -410,6 +410,7 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
     pro_info = bot_main.db.get_pro_status(user_id)
     notifications = bot_main.db.get_notification_settings(user_id)
     notice = bot_main.db.get_site_notice()
+    bot_username = resolve_bot_username()
     if notice.get("link", "").startswith("/"):
         notice["link"] = absolute_url(handler, notice["link"])
 
@@ -478,6 +479,8 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
         },
         "links": {
             "mini_app": absolute_url(handler, "/app/"),
+            "bot_username": bot_username,
+            "bot_url": f"https://t.me/{bot_username}" if bot_username else "",
         },
     }
 

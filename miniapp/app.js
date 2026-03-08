@@ -97,6 +97,23 @@ function sendToBot(payload, notify) {
   notify("Open this app from Telegram");
 }
 
+function openInBot(item, notify) {
+  const deepLink = String(item?.deep_link || "").trim();
+  if (deepLink) {
+    if (tg?.openTelegramLink) {
+      tg.openTelegramLink(deepLink);
+      return;
+    }
+    if (tg?.openLink) {
+      tg.openLink(deepLink);
+      return;
+    }
+    window.location.href = deepLink;
+    return;
+  }
+  sendToBot(item?.open_payload || {}, notify);
+}
+
 function Media({ item, detail = false }) {
   if (item?.preview_kind === "video" && item?.preview_url) {
     return html`<video className=${detail ? "detail-media" : "content-media"} src=${item.preview_url} muted loop autoPlay playsInline preload="metadata"></video>`;
@@ -513,6 +530,12 @@ function App() {
 
   const sections = boot.sections || {};
   const admin = boot.admin || {};
+  const homeStats = [
+    { label: "Movies", value: sections.recent_movies?.length || 0 },
+    { label: "Serials", value: sections.recent_serials?.length || 0 },
+    { label: "Saved", value: sections.favorites?.length || 0 },
+    { label: "Top", value: sections.top_viewed?.length || 0 },
+  ];
 
   return html`
     <div className="app-shell">
@@ -521,8 +544,8 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <div className="eyebrow">Telegram Mini App</div>
-          <h1 className="headline">Kino katalog</h1>
-          <p className="subheadline">Clean interface for search, favorites, PRO, ads, and admin overview.</p>
+          <h1 className="headline accent-headline">Mir Top Kino</h1>
+          <p className="subheadline">Premium catalog, fast Telegram handoff, PRO access and moderation tools in one interface.</p>
         </div>
         <div className="status-cluster">
           <div className="pill">${icon("user")}${boot.user.full_name || boot.user.username || boot.user.id}</div>
@@ -532,20 +555,33 @@ function App() {
       </header>
 
       ${tab === "home" ? html`
-        <section className="hero">
-          <div className="panel hero-main">
-            <div className="eyebrow">Overview</div>
-            <h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>One app for the whole bot</h2>
-            <p className="subheadline">Browse content, open it in the bot, track PRO, and manage ads from one screen.</p>
+        <section className="hero hero-premium">
+          <div className="panel hero-main premium-hero">
+            <div className="eyebrow">Streaming control center</div>
+            <div className="hero-badge-row">
+              <span className="hero-badge">Live previews</span>
+              <span className="hero-badge">Fast search</span>
+              <span className="hero-badge">PRO tools</span>
+            </div>
+            <h2 style=${{ margin: "8px 0 10px", fontSize: "36px" }}>Cinema catalog built for Telegram</h2>
+            <p className="subheadline">Browse movies, jump into the bot instantly, manage PRO access and moderate ads from a single polished surface.</p>
             <div className="hero-actions">
               <button className="button" onClick=${() => setTab("search")}>Search catalog</button>
               <button className="button secondary" onClick=${() => sendToBot({ action: "open_pro" }, notify)}>Continue in bot</button>
             </div>
+            <div className="hero-metrics">
+              ${homeStats.map((item) => html`<div className="mini-stat" key=${item.label}><span>${item.label}</span><strong>${item.value}</strong></div>`)}
+            </div>
           </div>
-          <div className="panel hero-side">
+          <div className="hero-side hero-side-premium">
+            <div className="feature-panel">
+              <div className="eyebrow">Instant handoff</div>
+              <div className="feature-title">Open any card in the bot</div>
+              <p className="subheadline">Movie and serial detail cards jump straight into Telegram with the exact item ready to open.</p>
+            </div>
             <div className="metric-grid">
-              <div className="metric-card"><div className="metric-label">Saved</div><div className="metric-value">${sections.favorites?.length || 0}</div></div>
-              <div className="metric-card"><div className="metric-label">Top cards</div><div className="metric-value">${sections.top_viewed?.length || 0}</div></div>
+              <div className="metric-card accent"><div className="metric-label">Saved</div><div className="metric-value">${sections.favorites?.length || 0}</div></div>
+              <div className="metric-card accent"><div className="metric-label">Top cards</div><div className="metric-value">${sections.top_viewed?.length || 0}</div></div>
               <div className="metric-card"><div className="metric-label">Media mode</div><div className="metric-value">${boot.settings.content_mode_label}</div></div>
               <div className="metric-card"><div className="metric-label">Pending ads</div><div className="metric-value">${admin.pending_ads_count || 0}</div></div>
             </div>
@@ -700,7 +736,7 @@ function App() {
         </div>
       </nav>
       ${menuOpen ? html`<div className="menu-backdrop" onClick=${() => setMenuOpen(false)}><div className="menu-sheet" onClick=${(event) => event.stopPropagation()}><div className="menu-sheet-header"><div><div className="eyebrow">Quick access</div><h3 style=${{ margin: "8px 0 0", fontSize: "24px" }}>More</h3></div><button className="icon-button" onClick=${() => setMenuOpen(false)}>${icon("close")}</button></div><div className="menu-grid">${secondaryNavItems.map((item) => html`<button className=${joinClass("menu-card", tab === item.key && "active")} key=${item.key} onClick=${() => setTab(item.key)}><div className="menu-card-icon">${icon(item.icon)}</div><div className="menu-card-label">${item.label}</div></button>`)}</div></div></div>` : null}
-      <${DetailSheet} item=${detail} onClose=${() => setDetail(null)} onFavorite=${favorite} onReact=${react} onBotOpen=${(item) => sendToBot(item.open_payload, notify)} />
+      <${DetailSheet} item=${detail} onClose=${() => setDetail(null)} onFavorite=${favorite} onReact=${react} onBotOpen=${(item) => openInBot(item, notify)} />
     </div>
   `;
 }

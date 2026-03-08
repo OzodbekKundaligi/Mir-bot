@@ -35,7 +35,6 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bson import ObjectId
@@ -1889,6 +1888,7 @@ def parse_admin_ids(value: str) -> list[int]:
 
 BTN_ADMIN_PANEL = "🛠 Panel"
 BTN_MINI_APP = "Ilova"
+MINI_APP_MENU_LINK = os.getenv("MINI_APP_MENU_LINK", "https://t.me/MirTopKinoBot/mirtopkino").strip()
 BTN_SUBS = "📢 Obuna"
 BTN_ADD_MOVIE = "➕ Kino"
 BTN_ADD_SERIAL = "📺 Serial"
@@ -1995,6 +1995,24 @@ def get_mini_app_url() -> str:
     return f"{public_base_url}/app/"
 
 
+def get_mini_app_launch_url() -> str:
+    direct_link = str(MINI_APP_MENU_LINK or "").strip()
+    if direct_link.startswith(("http://", "https://")):
+        return direct_link
+    return get_mini_app_url()
+
+
+def build_mini_app_open_kb() -> InlineKeyboardMarkup | None:
+    launch_url = get_mini_app_launch_url()
+    if not launch_url:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Ilovani ochish", url=launch_url)]
+        ]
+    )
+
+
 def build_content_mode_text() -> str:
     mode = db.get_bot_settings()["content_mode"]
     return (
@@ -2099,9 +2117,8 @@ def is_confirm_text(value: str | None) -> bool:
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
     buttons: list[list[KeyboardButton]] = []
-    mini_app_url = get_mini_app_url()
-    if mini_app_url:
-        buttons.append([KeyboardButton(text=BTN_MINI_APP, web_app=WebAppInfo(url=mini_app_url))])
+    if get_mini_app_launch_url():
+        buttons.append([KeyboardButton(text=BTN_MINI_APP)])
     buttons.extend([
         [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
         [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_NOTIFICATIONS)],
@@ -6393,8 +6410,12 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
         await open_admin_panel(message, state)
         return
     if text == BTN_MINI_APP.lower():
-        if get_mini_app_url():
-            await message.answer("Ilovani menyudagi maxsus tugma orqali oching.")
+        launch_url = get_mini_app_launch_url()
+        if launch_url:
+            await message.answer(
+                "Ilovani ochish uchun tugmani bosing.",
+                reply_markup=build_mini_app_open_kb(),
+            )
         else:
             await message.answer("Ilova havolasi hali sozlanmagan.")
         return

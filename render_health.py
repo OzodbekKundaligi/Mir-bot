@@ -27,6 +27,7 @@ MAX_JSON_BODY = 6 * 1024 * 1024
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 DEV_USER_ID = int((os.getenv("MINI_APP_DEV_USER_ID") or "0").strip() or 0)
 FILE_PATH_CACHE: dict[str, str] = {}
+BOT_USERNAME_HTTP_CACHE: str = ""
 
 
 def env_public_base_url() -> str:
@@ -58,6 +59,27 @@ def absolute_url(handler: BaseHTTPRequestHandler, path: str) -> str:
     if not path.startswith("/"):
         path = f"/{path}"
     return f"{base}{path}"
+
+
+def resolve_bot_username() -> str:
+    global BOT_USERNAME_HTTP_CACHE
+    cached = str(getattr(bot_main, "BOT_USERNAME_CACHE", "") or BOT_USERNAME_HTTP_CACHE or "").strip()
+    if cached:
+        return cached.lstrip("@")
+    try:
+        request_url = f"https://api.telegram.org/bot{bot_main.BOT_TOKEN}/getMe"
+        with urllib.request.urlopen(request_url, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return ""
+    if not payload.get("ok"):
+        return ""
+    result = payload.get("result") or {}
+    username = str(result.get("username") or "").strip().lstrip("@")
+    if username:
+        BOT_USERNAME_HTTP_CACHE = username
+        bot_main.BOT_USERNAME_CACHE = username
+    return username
 
 
 def full_name_from_user(user: dict[str, Any]) -> str:
@@ -260,6 +282,9 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
     content_type = str(item.get("content_type") or "").strip()
     content_ref = str(item.get("id") or item.get("content_ref") or "").strip()
     reaction = bot_main.db.get_reaction_summary(content_type, content_ref)
+    bot_username = resolve_bot_username()
+    start_payload = f"m_{content_ref}" if content_type == "movie" else f"s_{content_ref}"
+    deep_link = bot_main.build_start_deeplink(bot_username, start_payload) if bot_username and content_ref else ""
     preview = bot_main.resolve_inline_media_preview(item)
     if not preview and content_type == "serial" and content_ref:
         preview = bot_main.db.get_serial_inline_media_preview(content_ref)
@@ -302,6 +327,7 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
             "content_type": content_type,
             "content_ref": content_ref,
         },
+        "deep_link": deep_link,
         "share_text": f"{item.get('title') or ''} ({item.get('code') or ''})".strip(),
         "public_preview_url": absolute_url(handler, preview_url) if preview_url.startswith("/") else preview_url,
     }

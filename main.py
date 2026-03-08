@@ -1040,6 +1040,7 @@ class Database:
             "proof_file_id": proof_file_id.strip(),
             "comment": comment.strip()[:500],
             "status": "pending",
+            "review_messages": [],
             "created_at": now,
             "updated_at": now,
         }
@@ -1083,6 +1084,67 @@ class Database:
             },
         )
         return result.matched_count > 0
+
+    def resolve_payment_request(
+        self,
+        request_id: str,
+        status: str,
+        *,
+        reviewed_by: int | None = None,
+        review_note: str = "",
+    ) -> bool:
+        object_id = self._to_object_id(request_id)
+        if not object_id:
+            return False
+        result = self.payment_requests.update_one(
+            {"_id": object_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": status,
+                    "reviewed_by": reviewed_by,
+                    "review_note": review_note.strip()[:300],
+                    "reviewed_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return result.matched_count > 0
+
+    def add_payment_request_review_message(self, request_id: str, chat_id: int, message_id: int) -> None:
+        object_id = self._to_object_id(request_id)
+        if not object_id:
+            return
+        self.payment_requests.update_one(
+            {"_id": object_id},
+            {
+                "$addToSet": {
+                    "review_messages": {
+                        "chat_id": int(chat_id),
+                        "message_id": int(message_id),
+                    }
+                },
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
+    def get_payment_request_review_messages(self, request_id: str) -> list[dict[str, int]]:
+        request = self.get_payment_request(request_id) or {}
+        result: list[dict[str, int]] = []
+        for row in request.get("review_messages", []) or []:
+            chat_id = row.get("chat_id")
+            message_id = row.get("message_id")
+            if isinstance(chat_id, int) and isinstance(message_id, int):
+                result.append({"chat_id": chat_id, "message_id": message_id})
+        return result
+
+    def clear_payment_request_review_messages(self, request_id: str) -> None:
+        object_id = self._to_object_id(request_id)
+        if not object_id:
+            return
+        self.payment_requests.update_one(
+            {"_id": object_id},
+            {"$set": {"review_messages": [], "updated_at": utc_now_iso()}},
+        )
 
     def add_ad_channel(self, channel_ref: str, title: str | None = None) -> bool:
         now = utc_now_iso()
@@ -1137,6 +1199,7 @@ class Database:
                 "button_text": button_text.strip()[:60],
                 "button_url": button_url.strip()[:300],
                 "status": "pending",
+                "review_messages": [],
                 "created_at": now,
                 "updated_at": now,
             }
@@ -1188,6 +1251,69 @@ class Database:
             },
         )
         return result.matched_count > 0
+
+    def resolve_ad(
+        self,
+        ad_id: str,
+        status: str,
+        *,
+        reviewed_by: int | None = None,
+        channel_ref: str = "",
+        review_note: str = "",
+    ) -> bool:
+        object_id = self._to_object_id(ad_id)
+        if not object_id:
+            return False
+        result = self.ads.update_one(
+            {"_id": object_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": status,
+                    "reviewed_by": reviewed_by,
+                    "review_note": review_note.strip()[:300],
+                    "channel_ref": channel_ref.strip(),
+                    "reviewed_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return result.matched_count > 0
+
+    def add_ad_review_message(self, ad_id: str, chat_id: int, message_id: int) -> None:
+        object_id = self._to_object_id(ad_id)
+        if not object_id:
+            return
+        self.ads.update_one(
+            {"_id": object_id},
+            {
+                "$addToSet": {
+                    "review_messages": {
+                        "chat_id": int(chat_id),
+                        "message_id": int(message_id),
+                    }
+                },
+                "$set": {"updated_at": utc_now_iso()},
+            },
+        )
+
+    def get_ad_review_messages(self, ad_id: str) -> list[dict[str, int]]:
+        ad = self.get_ad(ad_id) or {}
+        result: list[dict[str, int]] = []
+        for row in ad.get("review_messages", []) or []:
+            chat_id = row.get("chat_id")
+            message_id = row.get("message_id")
+            if isinstance(chat_id, int) and isinstance(message_id, int):
+                result.append({"chat_id": chat_id, "message_id": message_id})
+        return result
+
+    def clear_ad_review_messages(self, ad_id: str) -> None:
+        object_id = self._to_object_id(ad_id)
+        if not object_id:
+            return
+        self.ads.update_one(
+            {"_id": object_id},
+            {"$set": {"review_messages": [], "updated_at": utc_now_iso()}},
+        )
 
     def search_content(
         self,
@@ -1747,36 +1873,36 @@ def parse_admin_ids(value: str) -> list[int]:
     return result
 
 
-BTN_ADMIN_PANEL = "🛠 Admin panel"
-BTN_SUBS = "📢 Majburiy obuna"
-BTN_ADD_MOVIE = "➕ Kino qo'shish"
-BTN_ADD_SERIAL = "📺 Serial qo'shish"
-BTN_DEL_MOVIE = "🗑 Kino o'chirish"
-BTN_EDIT_CONTENT = "✏️ Kontent tahrirlash"
-BTN_RANDOM_CODES = "🎲 Random kod"
-BTN_LIST_MOVIES = "📚 Kino va serial ro'yxati"
-BTN_STATS = "📊 Statistika"
-BTN_ADD_ADMIN = "👤 Admin qo'shish"
-BTN_BROADCAST = "📣 Habar yuborish"
-BTN_REQUESTS = "📥 So'rovlar"
-BTN_BACK = "⬅️ Ortga"
+BTN_ADMIN_PANEL = "🛠 Panel"
+BTN_SUBS = "📢 Obuna"
+BTN_ADD_MOVIE = "➕ Kino"
+BTN_ADD_SERIAL = "📺 Serial"
+BTN_DEL_MOVIE = "🗑 O'chirish"
+BTN_EDIT_CONTENT = "✏️ Tahrir"
+BTN_RANDOM_CODES = "🎲 Kod"
+BTN_LIST_MOVIES = "📚 Baza"
+BTN_STATS = "📊 Stat"
+BTN_ADD_ADMIN = "👤 Admin"
+BTN_BROADCAST = "📣 Xabar"
+BTN_REQUESTS = "📥 So'rov"
+BTN_BACK = "🏠 Menyu"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
-BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
-BTN_FAVORITES = "⭐ Sevimlilarim"
-BTN_TRENDING = "🔥 Trending"
-BTN_TOP_VIEWED = "🏆 Top ko'rilganlar"
-BTN_NOTIFICATIONS = "🔔 Bildirishnomalar"
-BTN_PRO_BUY = "👑 Pro olish"
-BTN_PRO_STATUS = "💎 Pro holatim"
-BTN_CREATE_AD = "📢 E'lon berish"
-BTN_MY_ADS = "🗂 E'lonlarim"
-BTN_PRO_MANAGE = "👑 Pro boshqarish"
-BTN_PRO_PRICE = "💰 Pro narxi"
-BTN_PRO_DURATION = "⏳ Pro muddati"
-BTN_PRO_REQUESTS = "💳 Pro so'rovlar"
-BTN_ADS = "📰 E'lonlar"
-BTN_AD_CHANNELS = "📡 E'lon kanalari"
+BTN_SEARCH_NAME = "🔎 Qidirish"
+BTN_FAVORITES = "⭐ Saqlangan"
+BTN_TRENDING = "🔥 Trend"
+BTN_TOP_VIEWED = "🏆 Top"
+BTN_NOTIFICATIONS = "🔔 Sozlama"
+BTN_PRO_BUY = "👑 PRO"
+BTN_PRO_STATUS = "💎 Holat"
+BTN_CREATE_AD = "📢 E'lon"
+BTN_MY_ADS = "🗂 Postlarim"
+BTN_PRO_MANAGE = "👑 PRO boshqaruv"
+BTN_PRO_PRICE = "💰 PRO narx"
+BTN_PRO_DURATION = "⏳ PRO muddat"
+BTN_PRO_REQUESTS = "💳 PRO so'rov"
+BTN_ADS = "📰 Postlar"
+BTN_AD_CHANNELS = "📡 Kanallar"
 BTN_YES = "✅ Ha"
 BTN_NO = "❌ Yo'q"
 BTN_CONFIRM = "✅ Tasdiqlash"
@@ -1979,8 +2105,8 @@ def build_payment_request_review_kb(request_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"proreq:approve:{request_id}"),
-                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"proreq:reject:{request_id}"),
+                InlineKeyboardButton(text="✅ Tasdiq", callback_data=f"proreq:approve:{request_id}"),
+                InlineKeyboardButton(text="❌ Rad", callback_data=f"proreq:reject:{request_id}"),
             ]
         ]
     )
@@ -1989,9 +2115,9 @@ def build_payment_request_review_kb(request_id: str) -> InlineKeyboardMarkup:
 def build_ad_manage_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="adch:add")],
-            [InlineKeyboardButton(text="📋 Kanallar ro'yxati", callback_data="adch:list")],
-            [InlineKeyboardButton(text="🗑 Kanal o'chirish", callback_data="adch:delete_menu")],
+            [InlineKeyboardButton(text="➕ Qo'shish", callback_data="adch:add")],
+            [InlineKeyboardButton(text="📋 Ro'yxat", callback_data="adch:list")],
+            [InlineKeyboardButton(text="🗑 O'chirish", callback_data="adch:delete_menu")],
         ]
     )
 
@@ -1999,8 +2125,8 @@ def build_ad_manage_kb() -> InlineKeyboardMarkup:
 def build_ad_review_kb(ad_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📡 Kanal tanlash", callback_data=f"ad:channel:{ad_id}")],
-            [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"ad:reject:{ad_id}")],
+            [InlineKeyboardButton(text="📡 Kanal", callback_data=f"ad:channel:{ad_id}")],
+            [InlineKeyboardButton(text="❌ Rad", callback_data=f"ad:reject:{ad_id}")],
         ]
     )
 
@@ -2350,6 +2476,66 @@ def format_ad_caption(title: str, description: str) -> str:
     if title_text and description_text:
         return f"{title_text}\n\n{description_text}"
     return title_text or description_text
+
+
+def format_payment_request_text(request: dict[str, Any]) -> str:
+    return (
+        "💳 PRO\n"
+        f"👤 {request.get('user_tg_id')}\n"
+        f"🔑 {request.get('payment_code') or '-'}\n"
+        f"📝 {request.get('comment') or '-'}"
+    )
+
+
+async def close_review_messages(bot: Bot, rows: list[dict[str, int]]) -> None:
+    seen: set[tuple[int, int]] = set()
+    for row in rows:
+        chat_id = row.get("chat_id")
+        message_id = row.get("message_id")
+        if not isinstance(chat_id, int) or not isinstance(message_id, int):
+            continue
+        key = (chat_id, message_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except TelegramBadRequest:
+            try:
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+            except TelegramBadRequest:
+                continue
+
+
+async def send_payment_request_review_to_chat(
+    bot: Bot,
+    chat_id: int,
+    request: dict[str, Any],
+    reply_markup: InlineKeyboardMarkup,
+) -> Message | None:
+    text = format_payment_request_text(request)
+    proof_media_type = str(request.get("proof_media_type") or "")
+    proof_file_id = str(request.get("proof_file_id") or "")
+    if proof_media_type == "photo" and proof_file_id:
+        return await bot.send_photo(chat_id=chat_id, photo=proof_file_id, caption=text, reply_markup=reply_markup)
+    if proof_media_type == "document" and proof_file_id:
+        return await bot.send_document(chat_id=chat_id, document=proof_file_id, caption=text, reply_markup=reply_markup)
+    return await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+
+async def send_payment_request_review_to_message(
+    message: Message,
+    request: dict[str, Any],
+    reply_markup: InlineKeyboardMarkup,
+) -> Message | None:
+    text = format_payment_request_text(request)
+    proof_media_type = str(request.get("proof_media_type") or "")
+    proof_file_id = str(request.get("proof_file_id") or "")
+    if proof_media_type == "photo" and proof_file_id:
+        return await message.answer_photo(proof_file_id, caption=text, reply_markup=reply_markup)
+    if proof_media_type == "document" and proof_file_id:
+        return await message.answer_document(proof_file_id, caption=text, reply_markup=reply_markup)
+    return await message.answer(text, reply_markup=reply_markup)
 
 
 def build_serial_episodes_kb(
@@ -2802,15 +2988,14 @@ async def send_ad_preview(
     button_url: str = "",
     footer_text: str = "",
     reply_markup: InlineKeyboardMarkup | None = None,
-) -> None:
+) -> Message:
     caption = format_ad_caption(title, description)
     if footer_text:
         caption = f"{caption}\n\n{footer_text}" if caption else footer_text
     markup = reply_markup or build_url_button_kb(button_text, button_url)
     if photo_file_id:
-        await target_message.answer_photo(photo_file_id, caption=caption, reply_markup=markup)
-        return
-    await target_message.answer(caption or "E'lon", reply_markup=markup)
+        return await target_message.answer_photo(photo_file_id, caption=caption, reply_markup=markup)
+    return await target_message.answer(caption or "E'lon", reply_markup=markup)
 
 
 async def post_ad_to_channel(bot: Bot, channel_ref: str, ad: dict[str, Any]) -> None:
@@ -2967,14 +3152,13 @@ def build_pro_offer_text(user_id: int) -> str:
     settings = db.get_bot_settings()
     payment_code = format_pro_payment_code(user_id)
     return (
-        "👑 PRO obuna\n\n"
-        "✨ Tarif: Yagona PRO\n"
+        "👑 Yagona PRO\n\n"
         f"💰 Narx: {settings['pro_price_text']}\n"
         f"🗓 Muddat: {settings['pro_duration_days']} kun\n\n"
-        "🧾 To'lov qilayotganda izohga quyidagini yozing:\n"
+        "🧾 Izohga shu kodni yozing:\n"
         f"`{payment_code}`\n\n"
-        f"Yoki kamida Telegram ID'ingizni yozing: `{user_id}`\n\n"
-        "✅ To'lov qilgach, shu yerda `✅ To'lov qildim` tugmasini bosing."
+        f"Yoki ID: `{user_id}`\n\n"
+        "✅ To'lovdan keyin `✅ To'lov qildim` ni bosing."
     )
 
 
@@ -2983,9 +3167,9 @@ def build_pro_status_text(user_id: int) -> str:
     if info["is_pro"]:
         until_text = info["pro_until"] or "-"
         return (
-            "💎 Sizda PRO aktiv.\n"
+            "💎 PRO aktiv\n"
             f"⏳ Amal qiladi: {until_text}\n"
-            f"💰 Joriy tarif: {info['pro_price_text']}"
+            f"💰 Tarif: {info['pro_price_text']}"
         )
     if info["pro_status"] == "expired":
         return (
@@ -2994,54 +3178,46 @@ def build_pro_status_text(user_id: int) -> str:
             f"💰 Joriy narx: {info['pro_price_text']}"
         )
     return (
-        "🔒 Sizda PRO aktiv emas.\n"
-        f"💰 Joriy narx: {info['pro_price_text']}\n"
-        "👑 PRO olish tugmasi orqali faollashtiring."
+        "🔒 PRO aktiv emas.\n"
+        f"💰 Narx: {info['pro_price_text']}\n"
+        "👑 `PRO` tugmasi orqali yoqing."
     )
 
 
 async def notify_admins_about_payment_request(bot: Bot, payment_request: dict[str, Any]) -> None:
-    text = (
-        "💳 Yangi PRO so'rovi\n"
-        f"👤 User ID: {payment_request.get('user_tg_id')}\n"
-        f"🔑 Kod: {payment_request.get('payment_code') or '-'}\n"
-        f"📝 Izoh: {payment_request.get('comment') or '-'}"
-    )
+    request_id = str(payment_request.get("id") or "")
+    if not request_id:
+        return
     markup = build_payment_request_review_kb(str(payment_request.get("id") or ""))
-    proof_media_type = str(payment_request.get("proof_media_type") or "")
-    proof_file_id = str(payment_request.get("proof_file_id") or "")
     for admin_id in db.list_admin_ids():
         try:
-            if proof_media_type and proof_file_id:
-                await send_media_to_chat(
-                    bot,
-                    str(admin_id),
-                    proof_media_type,
-                    proof_file_id,
-                    caption=text,
-                    reply_markup=markup,
-                )
-            else:
-                await bot.send_message(chat_id=admin_id, text=text, reply_markup=markup)
+            sent = await send_payment_request_review_to_chat(bot, admin_id, payment_request, markup)
+            if sent:
+                db.add_payment_request_review_message(request_id, admin_id, sent.message_id)
         except (TelegramBadRequest, TelegramForbiddenError):
             continue
 
 
 async def notify_admins_about_ad(bot: Bot, ad: dict[str, Any]) -> None:
-    footer = f"👤 User ID: {ad.get('user_tg_id')}\n🆔 Ad ID: {ad.get('id')}"
+    ad_id = str(ad.get("id") or "")
+    if not ad_id:
+        return
+    button_text = str(ad.get("button_text") or "").strip()
+    button_url = str(ad.get("button_url") or "").strip()
+    footer = f"👤 {ad.get('user_tg_id')}\n🆔 {ad_id}"
+    if button_text and button_url:
+        footer = f"{footer}\n🔗 {button_text}"
     markup = build_ad_review_kb(str(ad.get("id") or ""))
     caption = format_ad_caption(str(ad.get("title") or ""), str(ad.get("description") or ""))
     caption = f"{caption}\n\n{footer}" if caption else footer
     photo_file_id = str(ad.get("photo_file_id") or "")
-    button_markup = build_url_button_kb(str(ad.get("button_text") or ""), str(ad.get("button_url") or ""))
     for admin_id in db.list_admin_ids():
         try:
             if photo_file_id:
-                await bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=caption, reply_markup=markup)
+                sent = await bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=caption, reply_markup=markup)
             else:
-                await bot.send_message(chat_id=admin_id, text=caption, reply_markup=markup)
-            if button_markup:
-                await bot.send_message(chat_id=admin_id, text="🔗 Foydalanuvchi tugmasi:", reply_markup=button_markup)
+                sent = await bot.send_message(chat_id=admin_id, text=caption, reply_markup=markup)
+            db.add_ad_review_message(ad_id, admin_id, sent.message_id)
         except (TelegramBadRequest, TelegramForbiddenError):
             continue
 
@@ -3153,9 +3329,9 @@ async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[s
 
 async def ask_for_subscription(message: Message, channels: list[dict[str, Any]]) -> None:
     text_lines = [
-        "🚫 Botdan foydalanish uchun quyidagi kanallarga obuna bo'lishingiz kerak.",
+        "🚫 Avval kanallarga obuna bo'ling.",
         "",
-        "📢 Majburiy kanallar:",
+        "📢 Kanallar:",
     ]
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
@@ -3196,10 +3372,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     admin = db.is_admin(message.from_user.id)
     text = (
-        "🎬 Assalomu alaykum, Kino botga xush kelibsiz.\n\n"
-        "🔎 Kino yoki serial kodini yuboring.\n"
-        "🔥 Trending, 🏆 top kontent, 👑 PRO va 📢 e'lon bo'limlari ham tayyor.\n"
-        + ("\n🛠 Siz adminsiz — user menyu va admin panel siz uchun ochiq." if admin else "")
+        "🎬 Kino bot\n"
+        "🔢 Kod yuboring yoki menyudan tanlang."
+        + ("\n🛠 Admin panel ham ochiq." if admin else "")
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
 
@@ -3250,7 +3425,7 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🛠 Admin panel ochildi.\nQuyidagi boshqaruv tugmalaridan foydalaning.", reply_markup=admin_menu_kb())
+    await message.answer("🛠 Admin panel", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
@@ -3258,7 +3433,7 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🏠 Asosiy user menyu ochildi.", reply_markup=main_menu_kb(True))
+    await message.answer("🏠 Asosiy menyu", reply_markup=main_menu_kb(True))
 
 
 @router.message(F.text.in_({BTN_PRO_BUY, "Pro olish"}))
@@ -3267,7 +3442,7 @@ async def pro_buy(message: Message) -> None:
         return
     db.add_user(message.from_user.id, message.from_user.full_name)
     if db.is_admin(message.from_user.id):
-        await message.answer("👑 Siz adminsiz.\nSiz uchun PRO cheksiz va barcha premium funksiyalar ochiq.", reply_markup=main_menu_kb(True))
+        await message.answer("👑 Siz adminsiz.\nPRO sizda cheksiz aktiv.", reply_markup=main_menu_kb(True))
         return
     await message.answer(build_pro_offer_text(message.from_user.id), reply_markup=build_pro_purchase_kb())
 
@@ -3279,7 +3454,7 @@ async def pro_paid_start(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(PaymentState.waiting_proof)
     await callback.message.answer(
-        "💳 To'lov skrini yoki hujjatini yuboring.\nO'tkazib yuborish uchun `/skip` yozing.",
+        "💳 To'lov skrinini yuboring.\n`/skip` ham bo'ladi.",
         reply_markup=cancel_kb(),
     )
     await callback.answer()
@@ -3314,7 +3489,7 @@ async def pro_payment_proof(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(PaymentState.waiting_comment)
     await message.answer(
-        "📝 Qo'shimcha izoh yuboring.\nMasalan: Danatda aynan qaysi comment yozganingizni kiriting.\nO'tkazib yuborish uchun `/skip`.",
+        "📝 Izoh yuboring.\n`/skip` ham bo'ladi.",
         reply_markup=cancel_kb(),
     )
 
@@ -3343,7 +3518,7 @@ async def pro_payment_comment(message: Message, state: FSMContext) -> None:
     if request_data:
         await notify_admins_about_payment_request(message.bot, request_data)
     await message.answer(
-        "✅ PRO so'rovingiz yuborildi.\nAdmin tekshiradi va tasdiqlasa PRO yoqiladi.",
+        "✅ So'rov yuborildi.\nAdmin tekshiradi.",
         reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
     )
 
@@ -3360,7 +3535,7 @@ async def notification_settings(message: Message) -> None:
     if not message.from_user:
         return
     settings = db.get_notification_settings(message.from_user.id)
-    await message.answer("🔔 Bildirishnoma sozlamalari\nQuyidagilarni yoqib yoki o'chirib boshqaring:", reply_markup=build_notification_settings_kb(settings))
+    await message.answer("🔔 Bildirishnoma sozlamalari", reply_markup=build_notification_settings_kb(settings))
 
 
 @router.callback_query(F.data.startswith("notif:"))
@@ -3385,9 +3560,9 @@ async def trending_content(message: Message) -> None:
     items = db.list_trending_content(limit=20)
     kb = build_search_results_kb(items)
     if not kb:
-        await message.answer("📭 Hozircha trending kontent topilmadi.")
+        await message.answer("📭 Trend topilmadi.")
         return
-    await message.answer("🔥 Eng qizg'in trending kontentlar:", reply_markup=kb)
+    await message.answer("🔥 Trend", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
@@ -3401,9 +3576,9 @@ async def top_viewed_content(message: Message) -> None:
     items = db.list_top_viewed_content(limit=20)
     kb = build_search_results_kb(items)
     if not kb:
-        await message.answer("📭 Hozircha top kontent topilmadi.")
+        await message.answer("📭 Top topilmadi.")
         return
-    await message.answer("🏆 Eng ko'p ko'rilgan kontentlar:", reply_markup=kb)
+    await message.answer("🏆 Top", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_CREATE_AD, "E'lon berish"}))
@@ -3412,13 +3587,13 @@ async def create_ad_start(message: Message, state: FSMContext) -> None:
         return
     if not has_active_pro(message):
         await message.answer(
-            "🔒 E'lon berish faqat PRO foydalanuvchilar uchun.\n\n" + build_pro_offer_text(message.from_user.id),
+            "🔒 E'lon faqat PRO uchun.\n\n" + build_pro_offer_text(message.from_user.id),
             reply_markup=build_pro_purchase_kb(),
         )
         return
     await state.set_state(AdCreateState.waiting_photo)
     await message.answer(
-        "🖼 E'lon uchun rasm yuboring.\nRasmsiz e'lon uchun `/skip` yozing.",
+        "🖼 Rasm yuboring.\nRasmsiz bo'lsa `/skip`.",
         reply_markup=cancel_kb(),
     )
 
@@ -3443,7 +3618,7 @@ async def create_ad_photo(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(ad_photo_file_id=photo_file_id)
     await state.set_state(AdCreateState.waiting_title)
-    await message.answer("📝 E'lon sarlavhasini kiriting:", reply_markup=cancel_kb())
+    await message.answer("📝 Sarlavha kiriting:", reply_markup=cancel_kb())
 
 
 @router.message(AdCreateState.waiting_title)
@@ -3461,7 +3636,7 @@ async def create_ad_title(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(ad_title=text[:120])
     await state.set_state(AdCreateState.waiting_description)
-    await message.answer("📄 E'lon tavsifini kiriting:", reply_markup=cancel_kb())
+    await message.answer("📄 Tavsif kiriting:", reply_markup=cancel_kb())
 
 
 @router.message(AdCreateState.waiting_description)
@@ -3479,7 +3654,7 @@ async def create_ad_description(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(ad_description=text[:850])
     await state.set_state(AdCreateState.waiting_button_choice)
-    await message.answer("🔘 Inline tugma kerakmi?", reply_markup=build_inline_choice_kb("adbtn"))
+    await message.answer("🔘 Tugma kerakmi?", reply_markup=build_inline_choice_kb("adbtn"))
 
 
 @router.callback_query(StateFilter(AdCreateState.waiting_button_choice), F.data.in_({"adbtn:yes", "adbtn:no"}))
@@ -3743,28 +3918,13 @@ async def pro_requests(message: Message) -> None:
         return
     requests = db.list_pending_payment_requests(limit=15)
     if not requests:
-        await message.answer("📭 Kutilayotgan PRO so'rovlar yo'q.")
+        await message.answer("📭 PRO so'rov yo'q.")
         return
     for request in requests:
-        text = (
-            "💳 PRO so'rovi\n"
-            f"👤 User ID: {request.get('user_tg_id')}\n"
-            f"🔑 Kod: {request.get('payment_code') or '-'}\n"
-            f"📝 Izoh: {request.get('comment') or '-'}"
-        )
-        proof_media_type = str(request.get("proof_media_type") or "")
-        proof_file_id = str(request.get("proof_file_id") or "")
         markup = build_payment_request_review_kb(str(request.get("id") or ""))
-        if proof_media_type and proof_file_id:
-            await send_stored_media(
-                message,
-                proof_media_type,
-                proof_file_id,
-                caption=text,
-                reply_markup=markup,
-            )
-        else:
-            await message.answer(text, reply_markup=markup)
+        sent = await send_payment_request_review_to_message(message, request, markup)
+        if sent and message.from_user:
+            db.add_payment_request_review_message(str(request.get("id") or ""), message.from_user.id, sent.message_id)
 
 
 @router.callback_query(F.data.startswith("proreq:"))
@@ -3777,28 +3937,39 @@ async def pro_request_review(callback: CallbackQuery) -> None:
     if not request:
         await callback.answer("So'rov topilmadi", show_alert=True)
         return
+    if str(request.get("status") or "") != "pending":
+        await close_review_messages(callback.bot, db.get_payment_request_review_messages(request_id))
+        db.clear_payment_request_review_messages(request_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
     user_id = int(request.get("user_tg_id") or 0)
     if action == "approve":
-        db.update_payment_request_status(request_id, "approved", reviewed_by=callback.from_user.id)
+        if not db.resolve_payment_request(request_id, "approved", reviewed_by=callback.from_user.id):
+            await close_review_messages(callback.bot, db.get_payment_request_review_messages(request_id))
+            db.clear_payment_request_review_messages(request_id)
+            await callback.answer("Tayyor", show_alert=True)
+            return
         db.set_pro_state(user_id, True, admin_id=callback.from_user.id, note="To'lov tasdiqlandi")
         if db.get_notification_settings(user_id).get("pro_updates"):
             try:
-                await callback.bot.send_message(chat_id=user_id, text="✅ To'lov tasdiqlandi. PRO faollashtirildi!")
+                await callback.bot.send_message(chat_id=user_id, text="✅ PRO yoqildi.")
             except (TelegramBadRequest, TelegramForbiddenError):
                 pass
-        await callback.answer("✅ PRO yoqildi")
+        await callback.answer("✅ Tasdiq")
     else:
-        db.update_payment_request_status(request_id, "rejected", reviewed_by=callback.from_user.id)
+        if not db.resolve_payment_request(request_id, "rejected", reviewed_by=callback.from_user.id):
+            await close_review_messages(callback.bot, db.get_payment_request_review_messages(request_id))
+            db.clear_payment_request_review_messages(request_id)
+            await callback.answer("Tayyor", show_alert=True)
+            return
         if db.get_notification_settings(user_id).get("pro_updates"):
             try:
-                await callback.bot.send_message(chat_id=user_id, text="❌ PRO so'rovingiz rad etildi. Admin bilan bog'laning.")
+                await callback.bot.send_message(chat_id=user_id, text="❌ PRO rad etildi.")
             except (TelegramBadRequest, TelegramForbiddenError):
                 pass
-        await callback.answer("❌ Rad etildi")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except TelegramBadRequest:
-        pass
+        await callback.answer("❌ Rad")
+    await close_review_messages(callback.bot, db.get_payment_request_review_messages(request_id))
+    db.clear_payment_request_review_messages(request_id)
 
 
 @router.message(F.text.in_({BTN_AD_CHANNELS, "E'lon kanalari"}))
@@ -3897,19 +4068,21 @@ async def ads_review(message: Message) -> None:
         return
     ads = db.list_pending_ads(limit=15)
     if not ads:
-        await message.answer("📭 Kutilayotgan e'lonlar yo'q.")
+        await message.answer("📭 E'lon yo'q.")
         return
     for ad in ads:
-        await send_ad_preview(
+        sent = await send_ad_preview(
             message,
             title=str(ad.get("title") or ""),
             description=str(ad.get("description") or ""),
             photo_file_id=str(ad.get("photo_file_id") or ""),
             button_text=str(ad.get("button_text") or ""),
             button_url=str(ad.get("button_url") or ""),
-            footer_text=f"👤 User ID: {ad.get('user_tg_id')}\n🆔 ID: {ad.get('id')}",
+            footer_text=f"👤 {ad.get('user_tg_id')}\n🆔 {ad.get('id')}",
             reply_markup=build_ad_review_kb(str(ad.get("id") or "")),
         )
+        if sent:
+            db.add_ad_review_message(str(ad.get("id") or ""), message.from_user.id, sent.message_id)
 
 
 @router.callback_query(F.data.startswith("ad:channel:"))
@@ -3919,11 +4092,17 @@ async def ad_choose_channel(callback: CallbackQuery) -> None:
         return
     ad_id = callback.data.split(":", 2)[2]
     channels = db.list_ad_channels()
+    ad = db.get_ad(ad_id)
+    if not ad or str(ad.get("status") or "") != "pending":
+        await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+        db.clear_ad_review_messages(ad_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
     if not channels:
-        await callback.answer("Avval e'lon kanalini qo'shing", show_alert=True)
+        await callback.answer("Avval kanal qo'shing", show_alert=True)
         return
     await callback.message.answer(
-        "Qaysi kanalga joylansin?",
+        "📡 Kanal tanlang:",
         reply_markup=build_ad_channel_pick_kb(ad_id, channels),
     )
     await callback.answer()
@@ -3940,6 +4119,11 @@ async def ad_post_to_channel(callback: CallbackQuery) -> None:
     if not ad or not channel:
         await callback.answer("Ma'lumot topilmadi", show_alert=True)
         return
+    if str(ad.get("status") or "") != "pending":
+        await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+        db.clear_ad_review_messages(ad_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
     channel_ref = str(channel.get("channel_ref") or "")
     try:
         await post_ad_to_channel(callback.bot, channel_ref, ad)
@@ -3948,21 +4132,23 @@ async def ad_post_to_channel(callback: CallbackQuery) -> None:
         if callback.message:
             await callback.message.answer(f"❌ Joylashda xatolik: {exc}")
         return
-    db.update_ad_status(ad_id, "posted", reviewed_by=callback.from_user.id, channel_ref=channel_ref)
+    if not db.resolve_ad(ad_id, "posted", reviewed_by=callback.from_user.id, channel_ref=channel_ref):
+        await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+        db.clear_ad_review_messages(ad_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
     user_id = int(ad.get("user_tg_id") or 0)
     if db.get_notification_settings(user_id).get("ads_updates"):
         try:
             await callback.bot.send_message(
                 chat_id=user_id,
-                text=f"✅ E'loningiz {channel.get('title') or channel_ref} kanaliga joylandi.",
+                text=f"✅ E'lon joylandi: {channel.get('title') or channel_ref}",
             )
         except (TelegramBadRequest, TelegramForbiddenError):
             pass
-    await callback.answer("✅ Kanalga joylandi")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except TelegramBadRequest:
-        pass
+    await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+    db.clear_ad_review_messages(ad_id)
+    await callback.answer("✅ Joylandi")
 
 
 @router.callback_query(F.data.startswith("ad:reject:"))
@@ -3975,18 +4161,25 @@ async def ad_reject(callback: CallbackQuery) -> None:
     if not ad:
         await callback.answer("E'lon topilmadi", show_alert=True)
         return
-    db.update_ad_status(ad_id, "rejected", reviewed_by=callback.from_user.id)
+    if str(ad.get("status") or "") != "pending":
+        await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+        db.clear_ad_review_messages(ad_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
+    if not db.resolve_ad(ad_id, "rejected", reviewed_by=callback.from_user.id):
+        await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+        db.clear_ad_review_messages(ad_id)
+        await callback.answer("Tayyor", show_alert=True)
+        return
     user_id = int(ad.get("user_tg_id") or 0)
     if db.get_notification_settings(user_id).get("ads_updates"):
         try:
-            await callback.bot.send_message(chat_id=user_id, text="❌ E'loningiz moderator tomonidan rad etildi.")
+            await callback.bot.send_message(chat_id=user_id, text="❌ E'lon rad etildi.")
         except (TelegramBadRequest, TelegramForbiddenError):
             pass
-    await callback.answer("❌ Rad etildi")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except TelegramBadRequest:
-        pass
+    await close_review_messages(callback.bot, db.get_ad_review_messages(ad_id))
+    db.clear_ad_review_messages(ad_id)
+    await callback.answer("❌ Rad")
 
 
 @router.callback_query(F.data == "ad:none")
@@ -5195,7 +5388,7 @@ async def broadcast_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(BroadcastState.waiting_message)
     await message.answer(
-        "📣 Broadcast uchun xabar yuboring.\n\n✅ Qo'llab-quvvatlanadi: matn, rasm, video, gif, document, audio, voice.",
+        "📣 Xabar yuboring.\nMatn, rasm, video, gif, document, audio, voice bo'ladi.",
         reply_markup=cancel_kb(),
     )
 

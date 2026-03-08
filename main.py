@@ -119,15 +119,6 @@ class Database:
     def _normalize_quality(value: str | None) -> str:
         return re.sub(r"\s+", "", (value or "").strip().lower())
 
-    @staticmethod
-    def _parse_iso_dt(value: Any) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
-
     @classmethod
     def _title_matches_query(cls, title: str, description: str, query: str) -> bool:
         query_norm = cls._normalize_lookup(query)
@@ -922,40 +913,6 @@ class Database:
             self.reactions.insert_one({**criteria, "reaction": reaction, "created_at": now, "updated_at": now})
         return self.get_reaction_summary(content_type, content_ref)
 
-    def _reaction_map(self) -> dict[tuple[str, str], dict[str, int]]:
-        pipeline = [
-            {
-                "$group": {
-                    "_id": {
-                        "content_type": "$content_type",
-                        "content_ref": "$content_ref",
-                    },
-                    "likes": {
-                        "$sum": {
-                            "$cond": [{"$eq": ["$reaction", "like"]}, 1, 0]
-                        }
-                    },
-                    "dislikes": {
-                        "$sum": {
-                            "$cond": [{"$eq": ["$reaction", "dislike"]}, 1, 0]
-                        }
-                    },
-                }
-            }
-        ]
-        result: dict[tuple[str, str], dict[str, int]] = {}
-        for row in self.reactions.aggregate(pipeline):
-            key_data = row.get("_id") or {}
-            content_type = str(key_data.get("content_type") or "")
-            content_ref = str(key_data.get("content_ref") or "")
-            if not content_type or not content_ref:
-                continue
-            result[(content_type, content_ref)] = {
-                "likes": int(row.get("likes") or 0),
-                "dislikes": int(row.get("dislikes") or 0),
-            }
-        return result
-
     def _content_feed_rows(self) -> list[dict[str, Any]]:
         projection = {
             "code": 1,
@@ -993,36 +950,6 @@ class Database:
             reverse=True,
         )
         return rows[: max(1, limit)]
-
-    def list_trending_content(self, limit: int = 10) -> list[dict[str, Any]]:
-        reaction_map = self._reaction_map()
-        scored: list[dict[str, Any]] = []
-        for item in self._content_feed_rows():
-            content_type = str(item.get("content_type") or "")
-            content_ref = str(item.get("id") or "")
-            reaction = reaction_map.get((content_type, content_ref), {"likes": 0, "dislikes": 0})
-            created_at = self._parse_iso_dt(item.get("created_at"))
-            age_days = (datetime.now(UTC) - created_at).days if created_at else 999
-            freshness_bonus = max(0, 30 - max(0, age_days))
-            score = (
-                int(item.get("views") or 0) * 5
-                + int(item.get("downloads") or 0) * 3
-                + int(reaction.get("likes") or 0) * 4
-                - int(reaction.get("dislikes") or 0) * 2
-                + freshness_bonus
-            )
-            item_copy = dict(item)
-            item_copy["_trend_score"] = score
-            scored.append(item_copy)
-        scored.sort(
-            key=lambda item: (
-                int(item.get("_trend_score") or 0),
-                int(item.get("views") or 0),
-                str(item.get("created_at") or ""),
-            ),
-            reverse=True,
-        )
-        return [{k: v for k, v in row.items() if k != "_trend_score"} for row in scored[: max(1, limit)]]
 
     def create_payment_request(
         self,
@@ -1890,7 +1817,6 @@ BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
 BTN_SEARCH_NAME = "🔎 Qidirish"
 BTN_FAVORITES = "⭐ Saqlangan"
-BTN_TRENDING = "🔥 Trend"
 BTN_TOP_VIEWED = "🏆 Top"
 BTN_NOTIFICATIONS = "🔔 Sozlama"
 BTN_PRO_BUY = "👑 PRO"
@@ -1990,11 +1916,10 @@ def is_confirm_text(value: str | None) -> bool:
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
     buttons = [
-        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TRENDING)],
-        [KeyboardButton(text=BTN_TOP_VIEWED), KeyboardButton(text=BTN_FAVORITES)],
+        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
+        [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_NOTIFICATIONS)],
         [KeyboardButton(text=BTN_PRO_BUY), KeyboardButton(text=BTN_PRO_STATUS)],
         [KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)],
-        [KeyboardButton(text=BTN_NOTIFICATIONS)],
     ]
     if is_admin:
         buttons.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
@@ -3552,22 +3477,6 @@ async def notification_toggle(callback: CallbackQuery) -> None:
     settings = db.toggle_notification_setting(callback.from_user.id, key)
     await callback.message.edit_reply_markup(reply_markup=build_notification_settings_kb(settings))
     await callback.answer("✅ Yangilandi")
-
-
-@router.message(F.text.in_({BTN_TRENDING, "Trending"}))
-async def trending_content(message: Message) -> None:
-    if not message.from_user:
-        return
-    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
-    if not ok:
-        await ask_for_subscription(message, channels)
-        return
-    items = db.list_trending_content(limit=20)
-    kb = build_search_results_kb(items)
-    if not kb:
-        await message.answer("📭 Trend topilmadi.")
-        return
-    await message.answer("🔥 Trend", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
@@ -6165,8 +6074,11 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if text in {BTN_FAVORITES.lower(), "⭐ sevimlilarim"}:
         await list_favorites(message)
         return
-    if text in {BTN_TRENDING.lower(), "🔥 trending"}:
-        await trending_content(message)
+    if text in {"🔥 trend", "🔥 trending", "trending", "trend"}:
+        await message.answer(
+            "ℹ️ Menyu yangilandi.",
+            reply_markup=main_menu_kb(bool(message.from_user and db.is_admin(message.from_user.id))),
+        )
         return
     if text in {BTN_TOP_VIEWED.lower(), "🏆 top ko'rilganlar"}:
         await top_viewed_content(message)
@@ -6266,7 +6178,6 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_SERIAL_DONE.lower(),
         BTN_SEARCH_NAME.lower(),
         BTN_FAVORITES.lower(),
-        BTN_TRENDING.lower(),
         BTN_TOP_VIEWED.lower(),
         BTN_NOTIFICATIONS.lower(),
         BTN_PRO_BUY.lower(),
@@ -6301,7 +6212,6 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "bekor qilish",
         "nom bo'yicha qidirish",
         "sevimlilarim",
-        "trending",
         "top ko'rilganlar",
         "bildirishnomalar",
         "pro olish",

@@ -8,7 +8,7 @@ Telegram kino/serial bot. Render `Web Service` sifatida ishlaydi: bitta process 
 - Nom bo'yicha qidirish
 - Ko'rishlar sonini chiqarish
 - Like / dislike va reyting
-- `🔥 Trending` va `🏆 Top ko'rilganlar`
+- `🏆 Top ko'rilganlar`
 - Sevimlilar
 - Topilmagan kontent uchun so'rov qoldirish
 - So'rovga mos kontent qo'shilsa avto xabar yuborish

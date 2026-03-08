@@ -2734,9 +2734,13 @@ async def send_stored_media(
     file_id: str,
     caption: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
+    requester_id: int | None = None,
 ) -> None:
     final_caption = append_signature(caption)
-    protect_content = content_should_be_protected(message.from_user.id if message.from_user else None)
+    viewer_id = requester_id
+    if viewer_id is None and message.from_user and not message.from_user.is_bot:
+        viewer_id = message.from_user.id
+    protect_content = content_should_be_protected(viewer_id)
     if media_type == "video":
         await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "document":
@@ -3045,6 +3049,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         media_type=movie["media_type"],
         file_id=movie["file_id"],
         caption=caption if caption else None,
+        requester_id=requester_id,
         reply_markup=build_movie_actions_kb(
             movie["id"],
             is_favorite=is_favorite,
@@ -4441,6 +4446,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
             media_type=episode["media_type"],
             file_id=episode["file_id"],
             caption=caption if caption else None,
+            requester_id=callback.from_user.id,
             reply_markup=nav_kb,
         )
         db.increment_serial_downloads(serial_id)
@@ -6147,88 +6153,88 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     text = (message.text or "").strip().lower()
-    if text == "🛠 admin panel":
+    if text in {BTN_ADMIN_PANEL.lower(), "🛠 admin panel"}:
         await open_admin_panel(message, state)
         return
-    if text == "⬅️ ortga":
+    if text in {BTN_BACK.lower(), "⬅️ ortga"}:
         await back_to_main(message, state)
         return
-    if text == "🔎 nom bo'yicha qidirish":
+    if text in {BTN_SEARCH_NAME.lower(), "🔎 nom bo'yicha qidirish"}:
         await search_by_name_start(message, state)
         return
-    if text == "⭐ sevimlilarim":
+    if text in {BTN_FAVORITES.lower(), "⭐ sevimlilarim"}:
         await list_favorites(message)
         return
-    if text == "🔥 trending":
+    if text in {BTN_TRENDING.lower(), "🔥 trending"}:
         await trending_content(message)
         return
-    if text == "🏆 top ko'rilganlar":
+    if text in {BTN_TOP_VIEWED.lower(), "🏆 top ko'rilganlar"}:
         await top_viewed_content(message)
         return
-    if text == "🔔 bildirishnomalar":
+    if text in {BTN_NOTIFICATIONS.lower(), "🔔 bildirishnomalar"}:
         await notification_settings(message)
         return
-    if text == "👑 pro olish":
+    if text in {BTN_PRO_BUY.lower(), "👑 pro olish"}:
         await pro_buy(message)
         return
-    if text == "💎 pro holatim":
+    if text in {BTN_PRO_STATUS.lower(), "💎 pro holatim"}:
         await pro_status(message)
         return
-    if text == "📢 e'lon berish":
+    if text in {BTN_CREATE_AD.lower(), "📢 e'lon berish"}:
         await create_ad_start(message, state)
         return
-    if text == "🗂 e'lonlarim":
+    if text in {BTN_MY_ADS.lower(), "🗂 e'lonlarim"}:
         await my_ads(message)
         return
-    if text == "📢 majburiy obuna":
+    if text in {BTN_SUBS.lower(), "📢 majburiy obuna"}:
         await mandatory_subscriptions_menu(message)
         return
-    if text == "➕ kino qo'shish":
+    if text in {BTN_ADD_MOVIE.lower(), "➕ kino qo'shish"}:
         await add_movie_start(message, state)
         return
-    if text == "📺 serial qo'shish":
+    if text in {BTN_ADD_SERIAL.lower(), "📺 serial qo'shish"}:
         await add_serial_start(message, state)
         return
-    if text == "🗑 kino o'chirish":
+    if text in {BTN_DEL_MOVIE.lower(), "🗑 kino o'chirish"}:
         await delete_movie_start(message, state)
         return
-    if text == "✏️ kontent tahrirlash":
+    if text in {BTN_EDIT_CONTENT.lower(), "✏️ kontent tahrirlash"}:
         await edit_content_start(message, state)
         return
-    if text == "📚 kino va serial ro'yxati":
+    if text in {BTN_LIST_MOVIES.lower(), "📚 kino va serial ro'yxati"}:
         await movie_list(message)
         return
-    if text == "📊 statistika":
+    if text in {BTN_STATS.lower(), "📊 statistika"}:
         await stats(message)
         return
-    if text == "📥 so'rovlar":
+    if text in {BTN_REQUESTS.lower(), "📥 so'rovlar"}:
         await requests_dashboard(message)
         return
-    if text == "📣 habar yuborish":
+    if text in {BTN_BROADCAST.lower(), "📣 habar yuborish", "📣 xabar yuborish"}:
         await broadcast_start(message, state)
         return
-    if text == "👤 admin qo'shish":
+    if text in {BTN_ADD_ADMIN.lower(), "👤 admin qo'shish"}:
         await add_admin_start(message, state)
         return
-    if text == "🎲 random kod":
+    if text in {BTN_RANDOM_CODES.lower(), "🎲 random kod"}:
         await random_missing_codes(message)
         return
-    if text == "👑 pro boshqarish":
+    if text in {BTN_PRO_MANAGE.lower(), "👑 pro boshqarish"}:
         await pro_manage_start(message, state)
         return
-    if text == "💰 pro narxi":
+    if text in {BTN_PRO_PRICE.lower(), "💰 pro narxi"}:
         await pro_price_start(message, state)
         return
-    if text == "⏳ pro muddati":
+    if text in {BTN_PRO_DURATION.lower(), "⏳ pro muddati"}:
         await pro_duration_start(message, state)
         return
-    if text == "💳 pro so'rovlar":
+    if text in {BTN_PRO_REQUESTS.lower(), "💳 pro so'rovlar"}:
         await pro_requests(message)
         return
-    if text == "📰 e'lonlar":
+    if text in {BTN_ADS.lower(), "📰 e'lonlar"}:
         await ads_review(message)
         return
-    if text == "📡 e'lon kanalari":
+    if text in {BTN_AD_CHANNELS.lower(), "📡 e'lon kanalari"}:
         await ad_channels_menu(message)
         return
 

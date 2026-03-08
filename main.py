@@ -214,6 +214,7 @@ class Database:
         return {
             "pro_price_text": str(doc.get("pro_price_text") or PRO_PRICE_TEXT_DEFAULT),
             "pro_duration_days": max(1, int(doc.get("pro_duration_days") or PRO_DURATION_DAYS_DEFAULT)),
+            "content_mode": normalize_content_mode(doc.get("content_mode") or CONTENT_MODE_DEFAULT),
         }
 
     def set_pro_price_text(self, price_text: str) -> None:
@@ -234,6 +235,18 @@ class Database:
             {
                 "$set": {
                     "pro_duration_days": max(1, int(days)),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
+    def set_content_mode(self, mode: str) -> None:
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "content_mode": normalize_content_mode(mode),
                     "updated_at": utc_now_iso(),
                 }
             },
@@ -1827,6 +1840,7 @@ BTN_PRO_MANAGE = "👑 PRO boshqaruv"
 BTN_PRO_PRICE = "💰 PRO narx"
 BTN_PRO_DURATION = "⏳ PRO muddat"
 BTN_PRO_REQUESTS = "💳 PRO so'rov"
+BTN_CONTENT_MODE = "🔐 Media"
 BTN_ADS = "📰 Postlar"
 BTN_AD_CHANNELS = "📡 Kanallar"
 BTN_YES = "✅ Ha"
@@ -1866,9 +1880,49 @@ LEGACY_MENU_TEXTS = {
     "💰 pro narxi",
     "⏳ pro muddati",
     "💳 pro so'rovlar",
+    "🔐 media",
+    "media rejimi",
     "📰 e'lonlar",
     "📡 e'lon kanalari",
 }
+
+
+CONTENT_MODE_PRIVATE = "private"
+CONTENT_MODE_PUBLIC = "public"
+CONTENT_MODE_DEFAULT = CONTENT_MODE_PRIVATE
+
+
+def normalize_content_mode(value: Any) -> str:
+    return CONTENT_MODE_PUBLIC if str(value or "").strip().lower() == CONTENT_MODE_PUBLIC else CONTENT_MODE_PRIVATE
+
+
+def content_mode_label(mode: str) -> str:
+    normalized = normalize_content_mode(mode)
+    return "🌐 Ochiq" if normalized == CONTENT_MODE_PUBLIC else "🔒 Yopiq"
+
+
+def build_content_mode_text() -> str:
+    mode = db.get_bot_settings()["content_mode"]
+    return (
+        "🔐 Media rejimi\n"
+        f"Hozir: {content_mode_label(mode)}\n\n"
+        "🔒 Yopiq — yuklash va jo'natish yopiq\n"
+        "🌐 Ochiq — hammasi ochiq"
+    )
+
+
+def build_content_mode_kb(mode: str | None = None) -> InlineKeyboardMarkup:
+    current_mode = normalize_content_mode(mode)
+    private_text = f"{'✅ ' if current_mode == CONTENT_MODE_PRIVATE else ''}🔒 Yopiq"
+    public_text = f"{'✅ ' if current_mode == CONTENT_MODE_PUBLIC else ''}🌐 Ochiq"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=private_text, callback_data="contentmode:private"),
+                InlineKeyboardButton(text=public_text, callback_data="contentmode:public"),
+            ]
+        ]
+    )
 
 
 def generate_missing_numeric_codes(existing_codes: Iterable[str], count: int) -> list[str]:
@@ -1970,6 +2024,7 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_REQUESTS), KeyboardButton(text=BTN_STATS)],
         [KeyboardButton(text=BTN_PRO_MANAGE), KeyboardButton(text=BTN_PRO_PRICE)],
         [KeyboardButton(text=BTN_PRO_DURATION), KeyboardButton(text=BTN_PRO_REQUESTS)],
+        [KeyboardButton(text=BTN_CONTENT_MODE)],
         [KeyboardButton(text=BTN_ADS), KeyboardButton(text=BTN_AD_CHANNELS)],
         [KeyboardButton(text=BTN_RANDOM_CODES)],
         [KeyboardButton(text=BTN_ADD_ADMIN)],
@@ -2035,7 +2090,8 @@ def build_inline_choice_kb(prefix: str) -> InlineKeyboardMarkup:
 
 
 def content_should_be_protected(tg_id: int | None) -> bool:
-    return not bool(tg_id and db.is_admin(tg_id))
+    del tg_id
+    return db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE
 
 
 def build_pro_purchase_kb() -> InlineKeyboardMarkup:
@@ -3364,11 +3420,13 @@ async def whoami(message: Message) -> None:
         return
     user_id = message.from_user.id
     is_admin_user = db.is_admin(user_id)
+    content_mode = db.get_bot_settings()["content_mode"]
     protect_content = content_should_be_protected(user_id)
     await message.answer(
-        "🆔 ID: {user_id}\n👤 Admin: {is_admin_user}\n🔒 Protect: {protect_content}".format(
+        "🆔 ID: {user_id}\n👤 Admin: {is_admin_user}\n🔐 Rejim: {content_mode}\n🔒 Protect: {protect_content}".format(
             user_id=user_id,
             is_admin_user=is_admin_user,
+            content_mode=content_mode_label(content_mode),
             protect_content=protect_content,
         )
     )
@@ -3889,6 +3947,36 @@ async def pro_duration_finish(message: Message, state: FSMContext) -> None:
     db.set_pro_duration_days(days)
     await state.clear()
     await message.answer(f"✅ PRO muddati {days} kunga yangilandi.", reply_markup=admin_menu_kb())
+
+
+@router.message(F.text.in_({BTN_CONTENT_MODE, "Media rejimi"}))
+async def content_mode_menu(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    settings = db.get_bot_settings()
+    await message.answer(
+        build_content_mode_text(),
+        reply_markup=build_content_mode_kb(settings["content_mode"]),
+    )
+
+
+@router.callback_query(F.data.startswith("contentmode:"))
+async def content_mode_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    _, raw_mode = callback.data.split(":", 1)
+    new_mode = normalize_content_mode(raw_mode)
+    current_mode = db.get_bot_settings()["content_mode"]
+    if new_mode == current_mode:
+        await callback.answer("Rejim o'zgarmadi")
+        return
+    db.set_content_mode(new_mode)
+    await callback.message.edit_text(
+        build_content_mode_text(),
+        reply_markup=build_content_mode_kb(new_mode),
+    )
+    await callback.answer(f"Rejim: {content_mode_label(new_mode)}")
 
 
 @router.message(F.text.in_({BTN_PRO_REQUESTS, "Pro so'rovlar"}))
@@ -6208,6 +6296,9 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if text in {BTN_PRO_REQUESTS.lower(), "💳 pro so'rovlar"}:
         await pro_requests(message)
         return
+    if text in {BTN_CONTENT_MODE.lower(), "media rejimi"}:
+        await content_mode_menu(message)
+        return
     if text in {BTN_ADS.lower(), "📰 e'lonlar"}:
         await ads_review(message)
         return
@@ -6253,6 +6344,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_PRO_PRICE.lower(),
         BTN_PRO_DURATION.lower(),
         BTN_PRO_REQUESTS.lower(),
+        BTN_CONTENT_MODE.lower(),
         BTN_ADS.lower(),
         BTN_AD_CHANNELS.lower(),
         BTN_YES.lower(),
@@ -6287,6 +6379,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "pro narxi",
         "pro muddati",
         "pro so'rovlar",
+        "media rejimi",
         "e'lonlar",
         "e'lon kanalari",
         "ha",

@@ -6143,6 +6143,97 @@ async def cancel_any(message: Message, state: FSMContext) -> None:
 
 
 @router.message(StateFilter(None), F.text)
+async def legacy_menu_router(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    text = (message.text or "").strip().lower()
+    if text == "🛠 admin panel":
+        await open_admin_panel(message, state)
+        return
+    if text == "⬅️ ortga":
+        await back_to_main(message, state)
+        return
+    if text == "🔎 nom bo'yicha qidirish":
+        await search_by_name_start(message, state)
+        return
+    if text == "⭐ sevimlilarim":
+        await list_favorites(message)
+        return
+    if text == "🔥 trending":
+        await trending_content(message)
+        return
+    if text == "🏆 top ko'rilganlar":
+        await top_viewed_content(message)
+        return
+    if text == "🔔 bildirishnomalar":
+        await notification_settings(message)
+        return
+    if text == "👑 pro olish":
+        await pro_buy(message)
+        return
+    if text == "💎 pro holatim":
+        await pro_status(message)
+        return
+    if text == "📢 e'lon berish":
+        await create_ad_start(message, state)
+        return
+    if text == "🗂 e'lonlarim":
+        await my_ads(message)
+        return
+    if text == "📢 majburiy obuna":
+        await mandatory_subscriptions_menu(message)
+        return
+    if text == "➕ kino qo'shish":
+        await add_movie_start(message, state)
+        return
+    if text == "📺 serial qo'shish":
+        await add_serial_start(message, state)
+        return
+    if text == "🗑 kino o'chirish":
+        await delete_movie_start(message, state)
+        return
+    if text == "✏️ kontent tahrirlash":
+        await edit_content_start(message, state)
+        return
+    if text == "📚 kino va serial ro'yxati":
+        await movie_list(message)
+        return
+    if text == "📊 statistika":
+        await stats(message)
+        return
+    if text == "📥 so'rovlar":
+        await requests_dashboard(message)
+        return
+    if text == "📣 habar yuborish":
+        await broadcast_start(message, state)
+        return
+    if text == "👤 admin qo'shish":
+        await add_admin_start(message, state)
+        return
+    if text == "🎲 random kod":
+        await random_missing_codes(message)
+        return
+    if text == "👑 pro boshqarish":
+        await pro_manage_start(message, state)
+        return
+    if text == "💰 pro narxi":
+        await pro_price_start(message, state)
+        return
+    if text == "⏳ pro muddati":
+        await pro_duration_start(message, state)
+        return
+    if text == "💳 pro so'rovlar":
+        await pro_requests(message)
+        return
+    if text == "📰 e'lonlar":
+        await ads_review(message)
+        return
+    if text == "📡 e'lon kanalari":
+        await ad_channels_menu(message)
+        return
+
+
+@router.message(StateFilter(None), F.text)
 async def handle_code_request(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return

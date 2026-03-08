@@ -6,7 +6,7 @@ import os
 import random
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Iterable
 from urllib.parse import urlparse
@@ -83,6 +83,13 @@ class Database:
         self.content_requests = self.db["content_requests"]
         self.favorites = self.db["favorites"]
         self.notification_log = self.db["notification_log"]
+        self.settings = self.db["settings"]
+        self.payment_requests = self.db["payment_requests"]
+        self.reactions = self.db["reactions"]
+        self.notification_settings = self.db["notification_settings"]
+        self.ad_channels = self.db["ad_channels"]
+        self.ads = self.db["ads"]
+        self.pro_history = self.db["pro_history"]
 
         self.init_indexes()
 
@@ -111,6 +118,15 @@ class Database:
     @staticmethod
     def _normalize_quality(value: str | None) -> str:
         return re.sub(r"\s+", "", (value or "").strip().lower())
+
+    @staticmethod
+    def _parse_iso_dt(value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
 
     @classmethod
     def _title_matches_query(cls, title: str, description: str, query: str) -> bool:
@@ -158,6 +174,19 @@ class Database:
         )
         self.favorites.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
         self.notification_log.create_index([("created_at", DESCENDING)])
+        self.payment_requests.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
+        self.payment_requests.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
+        self.reactions.create_index(
+            [("user_tg_id", ASCENDING), ("content_type", ASCENDING), ("content_ref", ASCENDING)],
+            unique=True,
+        )
+        self.reactions.create_index([("content_type", ASCENDING), ("content_ref", ASCENDING)])
+        self.notification_settings.create_index("user_tg_id", unique=True)
+        self.ad_channels.create_index("channel_ref", unique=True)
+        self.ad_channels.create_index([("created_at", DESCENDING)])
+        self.ads.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
+        self.ads.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
+        self.pro_history.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
 
     def seed_admins(self, admin_ids: Iterable[int]) -> None:
         now = utc_now_iso()
@@ -179,16 +208,228 @@ class Database:
         except DuplicateKeyError:
             return False
 
+    def list_admin_ids(self) -> list[int]:
+        result: list[int] = []
+        for doc in self.admins.find({}, {"tg_id": 1}):
+            if not doc:
+                continue
+            tg_id = doc.get("tg_id")
+            if isinstance(tg_id, int):
+                result.append(tg_id)
+        return result
+
+    def get_bot_settings(self) -> dict[str, Any]:
+        doc = self.settings.find_one({"_id": "config"}) or {}
+        return {
+            "pro_price_text": str(doc.get("pro_price_text") or PRO_PRICE_TEXT_DEFAULT),
+            "pro_duration_days": max(1, int(doc.get("pro_duration_days") or PRO_DURATION_DAYS_DEFAULT)),
+        }
+
+    def set_pro_price_text(self, price_text: str) -> None:
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "pro_price_text": price_text.strip()[:120],
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
+    def set_pro_duration_days(self, days: int) -> None:
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "pro_duration_days": max(1, int(days)),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
     def add_user(self, tg_id: int, full_name: str) -> None:
         now = utc_now_iso()
         self.users.update_one(
             {"tg_id": tg_id},
             {
                 "$set": {"full_name": full_name},
-                "$setOnInsert": {"joined_at": now},
+                "$setOnInsert": {
+                    "joined_at": now,
+                    "is_pro": False,
+                    "pro_until": None,
+                    "pro_status": "free",
+                    "pro_note": "",
+                },
             },
             upsert=True,
         )
+        self.notification_settings.update_one(
+            {"user_tg_id": tg_id},
+            {
+                "$setOnInsert": {
+                    "user_tg_id": tg_id,
+                    "new_content": True,
+                    "pro_updates": True,
+                    "ads_updates": True,
+                    "created_at": now,
+                }
+            },
+            upsert=True,
+        )
+
+    def get_user(self, tg_id: int) -> dict[str, Any] | None:
+        doc = self.users.find_one(
+            {"tg_id": tg_id},
+            {
+                "tg_id": 1,
+                "full_name": 1,
+                "is_pro": 1,
+                "pro_until": 1,
+                "pro_status": 1,
+                "pro_note": 1,
+                "pro_given_at": 1,
+                "pro_given_by": 1,
+            },
+        )
+        return self._doc_without_object_id(doc)
+
+    def is_pro_active(self, tg_id: int) -> bool:
+        if self.is_admin(tg_id):
+            return True
+        user = self.get_user(tg_id)
+        if not user:
+            return False
+        pro_until = str(user.get("pro_until") or "").strip()
+        return bool(user.get("is_pro")) and bool(pro_until) and pro_until > utc_now_iso()
+
+    def get_pro_status(self, tg_id: int) -> dict[str, Any]:
+        user = self.get_user(tg_id) or {"tg_id": tg_id}
+        settings = self.get_bot_settings()
+        if self.is_admin(tg_id):
+            return {
+                "is_pro": True,
+                "pro_until": "Cheksiz (Admin)",
+                "pro_status": "active",
+                "pro_note": "Admin uchun cheksiz PRO",
+                "pro_price_text": settings["pro_price_text"],
+                "pro_duration_days": settings["pro_duration_days"],
+            }
+        is_active = self.is_pro_active(tg_id)
+        current_status = "active" if is_active else ("expired" if user.get("is_pro") else str(user.get("pro_status") or "free"))
+        return {
+            "is_pro": is_active,
+            "pro_until": str(user.get("pro_until") or ""),
+            "pro_status": current_status,
+            "pro_note": str(user.get("pro_note") or ""),
+            "pro_price_text": settings["pro_price_text"],
+            "pro_duration_days": settings["pro_duration_days"],
+        }
+
+    def set_pro_state(
+        self,
+        tg_id: int,
+        enabled: bool,
+        *,
+        admin_id: int | None = None,
+        note: str = "",
+        duration_days: int | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        if enabled:
+            settings = self.get_bot_settings()
+            days = max(1, int(duration_days or settings["pro_duration_days"]))
+            pro_until = (datetime.now(UTC) + timedelta(days=days)).isoformat()
+            update = {
+                "is_pro": True,
+                "pro_until": pro_until,
+                "pro_status": "active",
+                "pro_note": note.strip()[:200],
+                "pro_given_at": now,
+                "pro_given_by": admin_id,
+            }
+            history_action = "enabled"
+        else:
+            update = {
+                "is_pro": False,
+                "pro_until": None,
+                "pro_status": "disabled",
+                "pro_note": note.strip()[:200],
+                "pro_given_at": now,
+                "pro_given_by": admin_id,
+            }
+            history_action = "disabled"
+        self.users.update_one(
+            {"tg_id": tg_id},
+            {
+                "$set": update,
+                "$setOnInsert": {"joined_at": now, "full_name": ""},
+            },
+            upsert=True,
+        )
+        self.pro_history.insert_one(
+            {
+                "user_tg_id": tg_id,
+                "action": history_action,
+                "admin_id": admin_id,
+                "note": note.strip()[:200],
+                "created_at": now,
+                "pro_until": update.get("pro_until"),
+            }
+        )
+
+    def list_active_pro_user_ids(self) -> list[int]:
+        now_iso = utc_now_iso()
+        user_ids: list[int] = self.list_admin_ids()
+        for doc in self.users.find(
+            {"is_pro": True, "pro_until": {"$gt": now_iso}},
+            {"tg_id": 1},
+        ):
+            if not doc:
+                continue
+            tg_id = doc.get("tg_id")
+            if isinstance(tg_id, int) and tg_id not in user_ids:
+                user_ids.append(tg_id)
+        return user_ids
+
+    def count_active_pro_users(self) -> int:
+        return len(self.list_active_pro_user_ids())
+
+    def get_notification_settings(self, user_tg_id: int) -> dict[str, Any]:
+        now = utc_now_iso()
+        self.notification_settings.update_one(
+            {"user_tg_id": user_tg_id},
+            {
+                "$setOnInsert": {
+                    "user_tg_id": user_tg_id,
+                    "new_content": True,
+                    "pro_updates": True,
+                    "ads_updates": True,
+                    "created_at": now,
+                }
+            },
+            upsert=True,
+        )
+        doc = self.notification_settings.find_one({"user_tg_id": user_tg_id})
+        return self._doc_without_object_id(doc) or {
+            "user_tg_id": user_tg_id,
+            "new_content": True,
+            "pro_updates": True,
+            "ads_updates": True,
+        }
+
+    def toggle_notification_setting(self, user_tg_id: int, key: str) -> dict[str, Any]:
+        if key not in {"new_content", "pro_updates", "ads_updates"}:
+            return self.get_notification_settings(user_tg_id)
+        current = self.get_notification_settings(user_tg_id)
+        next_value = not bool(current.get(key))
+        self.notification_settings.update_one(
+            {"user_tg_id": user_tg_id},
+            {"$set": {key: next_value, "updated_at": utc_now_iso()}},
+            upsert=True,
+        )
+        return self.get_notification_settings(user_tg_id)
 
     def add_required_channel(
         self,
@@ -629,6 +870,324 @@ class Database:
             if isinstance(tg_id, int):
                 user_ids.append(tg_id)
         return user_ids
+
+    def get_user_reaction(self, user_tg_id: int, content_type: str, content_ref: str) -> str:
+        doc = self.reactions.find_one(
+            {
+                "user_tg_id": user_tg_id,
+                "content_type": content_type,
+                "content_ref": content_ref,
+            },
+            {"reaction": 1},
+        )
+        return str((doc or {}).get("reaction") or "")
+
+    def get_reaction_summary(self, content_type: str, content_ref: str) -> dict[str, Any]:
+        likes = self.reactions.count_documents(
+            {"content_type": content_type, "content_ref": content_ref, "reaction": "like"}
+        )
+        dislikes = self.reactions.count_documents(
+            {"content_type": content_type, "content_ref": content_ref, "reaction": "dislike"}
+        )
+        total = likes + dislikes
+        rating = round((likes / total) * 5, 1) if total else 0.0
+        return {
+            "likes": int(likes),
+            "dislikes": int(dislikes),
+            "total": int(total),
+            "rating": rating,
+        }
+
+    def set_reaction(
+        self,
+        user_tg_id: int,
+        content_type: str,
+        content_ref: str,
+        reaction: str,
+    ) -> dict[str, Any]:
+        if content_type not in {"movie", "serial"} or reaction not in {"like", "dislike"}:
+            return self.get_reaction_summary(content_type, content_ref)
+        criteria = {
+            "user_tg_id": user_tg_id,
+            "content_type": content_type,
+            "content_ref": content_ref,
+        }
+        existing = self.reactions.find_one(criteria, {"reaction": 1})
+        now = utc_now_iso()
+        if existing and str(existing.get("reaction") or "") == reaction:
+            self.reactions.delete_one(criteria)
+        elif existing:
+            self.reactions.update_one(criteria, {"$set": {"reaction": reaction, "updated_at": now}})
+        else:
+            self.reactions.insert_one({**criteria, "reaction": reaction, "created_at": now, "updated_at": now})
+        return self.get_reaction_summary(content_type, content_ref)
+
+    def _reaction_map(self) -> dict[tuple[str, str], dict[str, int]]:
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {
+                        "content_type": "$content_type",
+                        "content_ref": "$content_ref",
+                    },
+                    "likes": {
+                        "$sum": {
+                            "$cond": [{"$eq": ["$reaction", "like"]}, 1, 0]
+                        }
+                    },
+                    "dislikes": {
+                        "$sum": {
+                            "$cond": [{"$eq": ["$reaction", "dislike"]}, 1, 0]
+                        }
+                    },
+                }
+            }
+        ]
+        result: dict[tuple[str, str], dict[str, int]] = {}
+        for row in self.reactions.aggregate(pipeline):
+            key_data = row.get("_id") or {}
+            content_type = str(key_data.get("content_type") or "")
+            content_ref = str(key_data.get("content_ref") or "")
+            if not content_type or not content_ref:
+                continue
+            result[(content_type, content_ref)] = {
+                "likes": int(row.get("likes") or 0),
+                "dislikes": int(row.get("dislikes") or 0),
+            }
+        return result
+
+    def _content_feed_rows(self) -> list[dict[str, Any]]:
+        projection = {
+            "code": 1,
+            "title": 1,
+            "description": 1,
+            "year": 1,
+            "quality": 1,
+            "downloads": 1,
+            "views": 1,
+            "created_at": 1,
+        }
+        rows: list[dict[str, Any]] = []
+        for doc in self.movies.find({}, projection):
+            normalized = self._doc_without_object_id(doc)
+            if not normalized:
+                continue
+            normalized["content_type"] = "movie"
+            rows.append(normalized)
+        for doc in self.serials.find({}, projection):
+            normalized = self._doc_without_object_id(doc)
+            if not normalized:
+                continue
+            normalized["content_type"] = "serial"
+            rows.append(normalized)
+        return rows
+
+    def list_top_viewed_content(self, limit: int = 10) -> list[dict[str, Any]]:
+        rows = self._content_feed_rows()
+        rows.sort(
+            key=lambda item: (
+                int(item.get("views") or 0),
+                int(item.get("downloads") or 0),
+                str(item.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[: max(1, limit)]
+
+    def list_trending_content(self, limit: int = 10) -> list[dict[str, Any]]:
+        reaction_map = self._reaction_map()
+        scored: list[dict[str, Any]] = []
+        for item in self._content_feed_rows():
+            content_type = str(item.get("content_type") or "")
+            content_ref = str(item.get("id") or "")
+            reaction = reaction_map.get((content_type, content_ref), {"likes": 0, "dislikes": 0})
+            created_at = self._parse_iso_dt(item.get("created_at"))
+            age_days = (datetime.now(UTC) - created_at).days if created_at else 999
+            freshness_bonus = max(0, 30 - max(0, age_days))
+            score = (
+                int(item.get("views") or 0) * 5
+                + int(item.get("downloads") or 0) * 3
+                + int(reaction.get("likes") or 0) * 4
+                - int(reaction.get("dislikes") or 0) * 2
+                + freshness_bonus
+            )
+            item_copy = dict(item)
+            item_copy["_trend_score"] = score
+            scored.append(item_copy)
+        scored.sort(
+            key=lambda item: (
+                int(item.get("_trend_score") or 0),
+                int(item.get("views") or 0),
+                str(item.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        return [{k: v for k, v in row.items() if k != "_trend_score"} for row in scored[: max(1, limit)]]
+
+    def create_payment_request(
+        self,
+        user_tg_id: int,
+        payment_code: str,
+        proof_media_type: str = "",
+        proof_file_id: str = "",
+        comment: str = "",
+    ) -> str:
+        now = utc_now_iso()
+        doc = {
+            "user_tg_id": user_tg_id,
+            "payment_code": payment_code.strip()[:80],
+            "proof_media_type": proof_media_type.strip(),
+            "proof_file_id": proof_file_id.strip(),
+            "comment": comment.strip()[:500],
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = self.payment_requests.insert_one(doc)
+        return str(result.inserted_id)
+
+    def get_payment_request(self, request_id: str) -> dict[str, Any] | None:
+        object_id = self._to_object_id(request_id)
+        if not object_id:
+            return None
+        doc = self.payment_requests.find_one({"_id": object_id})
+        return self._doc_without_object_id(doc)
+
+    def list_pending_payment_requests(self, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self.payment_requests.find({"status": "pending"}).sort("created_at", DESCENDING)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+        return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def update_payment_request_status(
+        self,
+        request_id: str,
+        status: str,
+        *,
+        reviewed_by: int | None = None,
+        review_note: str = "",
+    ) -> bool:
+        object_id = self._to_object_id(request_id)
+        if not object_id:
+            return False
+        result = self.payment_requests.update_one(
+            {"_id": object_id},
+            {
+                "$set": {
+                    "status": status,
+                    "reviewed_by": reviewed_by,
+                    "review_note": review_note.strip()[:300],
+                    "reviewed_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return result.matched_count > 0
+
+    def add_ad_channel(self, channel_ref: str, title: str | None = None) -> bool:
+        now = utc_now_iso()
+        try:
+            self.ad_channels.insert_one(
+                {
+                    "channel_ref": channel_ref.strip(),
+                    "title": (title or channel_ref).strip(),
+                    "created_at": now,
+                    "is_active": True,
+                }
+            )
+            return True
+        except DuplicateKeyError:
+            return False
+
+    def list_ad_channels(self) -> list[dict[str, Any]]:
+        cursor = self.ad_channels.find({"is_active": True}).sort("created_at", DESCENDING)
+        return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def get_ad_channel(self, channel_id: str) -> dict[str, Any] | None:
+        object_id = self._to_object_id(channel_id)
+        if not object_id:
+            return None
+        doc = self.ad_channels.find_one({"_id": object_id})
+        return self._doc_without_object_id(doc)
+
+    def remove_ad_channel(self, channel_id: str) -> bool:
+        object_id = self._to_object_id(channel_id)
+        if not object_id:
+            return False
+        result = self.ad_channels.delete_one({"_id": object_id})
+        return result.deleted_count > 0
+
+    def create_ad(
+        self,
+        user_tg_id: int,
+        title: str,
+        description: str,
+        *,
+        photo_file_id: str = "",
+        button_text: str = "",
+        button_url: str = "",
+    ) -> str:
+        now = utc_now_iso()
+        result = self.ads.insert_one(
+            {
+                "user_tg_id": user_tg_id,
+                "title": title.strip()[:120],
+                "description": description.strip()[:850],
+                "photo_file_id": photo_file_id.strip(),
+                "button_text": button_text.strip()[:60],
+                "button_url": button_url.strip()[:300],
+                "status": "pending",
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        return str(result.inserted_id)
+
+    def get_ad(self, ad_id: str) -> dict[str, Any] | None:
+        object_id = self._to_object_id(ad_id)
+        if not object_id:
+            return None
+        doc = self.ads.find_one({"_id": object_id})
+        return self._doc_without_object_id(doc)
+
+    def list_user_ads(self, user_tg_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self.ads.find({"user_tg_id": user_tg_id}).sort("created_at", DESCENDING)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+        return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def list_pending_ads(self, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self.ads.find({"status": "pending"}).sort("created_at", DESCENDING)
+        if limit > 0:
+            cursor = cursor.limit(limit)
+        return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def update_ad_status(
+        self,
+        ad_id: str,
+        status: str,
+        *,
+        reviewed_by: int | None = None,
+        channel_ref: str = "",
+        review_note: str = "",
+    ) -> bool:
+        object_id = self._to_object_id(ad_id)
+        if not object_id:
+            return False
+        result = self.ads.update_one(
+            {"_id": object_id},
+            {
+                "$set": {
+                    "status": status,
+                    "reviewed_by": reviewed_by,
+                    "review_note": review_note.strip()[:300],
+                    "channel_ref": channel_ref.strip(),
+                    "reviewed_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+        )
+        return result.matched_count > 0
 
     def search_content(
         self,
@@ -1075,6 +1634,10 @@ class Database:
         requests = self.requests_log.count_documents({})
         open_content_requests = self.content_requests.count_documents({"status": "open"})
         favorites = self.favorites.count_documents({})
+        active_pro_users = self.count_active_pro_users()
+        pending_payments = self.payment_requests.count_documents({"status": "pending"})
+        pending_ads = self.ads.count_documents({"status": "pending"})
+        reactions = self.reactions.count_documents({})
         return {
             "users": users,
             "movies": movies,
@@ -1084,6 +1647,10 @@ class Database:
             "requests": requests,
             "open_content_requests": open_content_requests,
             "favorites": favorites,
+            "active_pro_users": active_pro_users,
+            "pending_payments": pending_payments,
+            "pending_ads": pending_ads,
+            "reactions": reactions,
         }
 
 
@@ -1128,10 +1695,45 @@ class EditContentState(StatesGroup):
 
 class BroadcastState(StatesGroup):
     waiting_message = State()
+    waiting_button_choice = State()
+    waiting_button_text = State()
+    waiting_button_url = State()
+    waiting_confirm = State()
 
 
 class SearchState(StatesGroup):
     waiting_query = State()
+
+
+class ProManageState(StatesGroup):
+    waiting_input = State()
+
+
+class ProPriceState(StatesGroup):
+    waiting_price = State()
+
+
+class ProDurationState(StatesGroup):
+    waiting_days = State()
+
+
+class PaymentState(StatesGroup):
+    waiting_proof = State()
+    waiting_comment = State()
+
+
+class AddAdChannelState(StatesGroup):
+    waiting_input = State()
+
+
+class AdCreateState(StatesGroup):
+    waiting_photo = State()
+    waiting_title = State()
+    waiting_description = State()
+    waiting_button_choice = State()
+    waiting_button_text = State()
+    waiting_button_url = State()
+    waiting_confirm = State()
 
 
 def parse_admin_ids(value: str) -> list[int]:
@@ -1162,6 +1764,23 @@ BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
 BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
 BTN_FAVORITES = "⭐ Sevimlilarim"
+BTN_TRENDING = "🔥 Trending"
+BTN_TOP_VIEWED = "🏆 Top ko'rilganlar"
+BTN_NOTIFICATIONS = "🔔 Bildirishnomalar"
+BTN_PRO_BUY = "👑 Pro olish"
+BTN_PRO_STATUS = "💎 Pro holatim"
+BTN_CREATE_AD = "📢 E'lon berish"
+BTN_MY_ADS = "🗂 E'lonlarim"
+BTN_PRO_MANAGE = "👑 Pro boshqarish"
+BTN_PRO_PRICE = "💰 Pro narxi"
+BTN_PRO_DURATION = "⏳ Pro muddati"
+BTN_PRO_REQUESTS = "💳 Pro so'rovlar"
+BTN_ADS = "📰 E'lonlar"
+BTN_AD_CHANNELS = "📡 E'lon kanalari"
+BTN_YES = "✅ Ha"
+BTN_NO = "❌ Yo'q"
+BTN_CONFIRM = "✅ Tasdiqlash"
+BTN_SKIP = "/skip"
 BOT_SIGNATURE = "@MirTopKinoBot"
 
 
@@ -1219,21 +1838,41 @@ def is_serial_done_text(value: str | None) -> bool:
     }
 
 
+def is_skip_text(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().lower() in {BTN_SKIP.lower(), "-", "skip"}
+
+
+def is_yes_text(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().lower() in {BTN_YES.lower(), "ha", "yes"}
+
+
+def is_no_text(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().lower() in {BTN_NO.lower(), "yo'q", "yoq", "no"}
+
+
+def is_confirm_text(value: str | None) -> bool:
+    if not value:
+        return False
+    return value.strip().lower() in {BTN_CONFIRM.lower(), "tasdiqlash", "yuborish"}
+
+
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
+    buttons = [
+        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TRENDING)],
+        [KeyboardButton(text=BTN_TOP_VIEWED), KeyboardButton(text=BTN_FAVORITES)],
+        [KeyboardButton(text=BTN_PRO_BUY), KeyboardButton(text=BTN_PRO_STATUS)],
+        [KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)],
+        [KeyboardButton(text=BTN_NOTIFICATIONS)],
+    ]
     if is_admin:
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text=BTN_ADMIN_PANEL)],
-            ],
-            resize_keyboard=True,
-        )
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=BTN_SEARCH_NAME)],
-            [KeyboardButton(text=BTN_FAVORITES)],
-        ],
-        resize_keyboard=True,
-    )
+        buttons.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
 def admin_menu_kb() -> ReplyKeyboardMarkup:
@@ -1242,8 +1881,11 @@ def admin_menu_kb() -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_ADD_MOVIE), KeyboardButton(text=BTN_ADD_SERIAL)],
         [KeyboardButton(text=BTN_DEL_MOVIE), KeyboardButton(text=BTN_EDIT_CONTENT)],
         [KeyboardButton(text=BTN_LIST_MOVIES), KeyboardButton(text=BTN_BROADCAST)],
-        [KeyboardButton(text=BTN_REQUESTS)],
-        [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_RANDOM_CODES)],
+        [KeyboardButton(text=BTN_REQUESTS), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=BTN_PRO_MANAGE), KeyboardButton(text=BTN_PRO_PRICE)],
+        [KeyboardButton(text=BTN_PRO_DURATION), KeyboardButton(text=BTN_PRO_REQUESTS)],
+        [KeyboardButton(text=BTN_ADS), KeyboardButton(text=BTN_AD_CHANNELS)],
+        [KeyboardButton(text=BTN_RANDOM_CODES)],
         [KeyboardButton(text=BTN_ADD_ADMIN)],
         [KeyboardButton(text=BTN_BACK)],
     ]
@@ -1266,11 +1908,111 @@ def cancel_kb() -> ReplyKeyboardMarkup:
     )
 
 
+def yes_no_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_YES), KeyboardButton(text=BTN_NO)], [KeyboardButton(text=BTN_CANCEL)]],
+        resize_keyboard=True,
+    )
+
+
+def confirm_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_CONFIRM), KeyboardButton(text=BTN_CANCEL)]],
+        resize_keyboard=True,
+    )
+
+
 def serial_upload_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=BTN_SERIAL_DONE), KeyboardButton(text=BTN_CANCEL)]],
         resize_keyboard=True,
     )
+
+
+def build_url_button_kb(button_text: str, button_url: str) -> InlineKeyboardMarkup | None:
+    text = button_text.strip()
+    url = button_url.strip()
+    if not text or not url:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, url=url)]])
+
+
+def build_inline_choice_kb(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha", callback_data=f"{prefix}:yes"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data=f"{prefix}:no"),
+            ]
+        ]
+    )
+
+
+def content_should_be_protected(tg_id: int | None) -> bool:
+    return not bool(tg_id and db.is_admin(tg_id))
+
+
+def build_pro_purchase_kb() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if PRO_PAYMENT_LINK_1:
+        rows.append([InlineKeyboardButton(text="💳 To'lov havolasi 1", url=PRO_PAYMENT_LINK_1)])
+    if PRO_PAYMENT_LINK_2:
+        rows.append([InlineKeyboardButton(text="🌐 To'lov havolasi 2", url=PRO_PAYMENT_LINK_2)])
+    rows.append([InlineKeyboardButton(text="✅ To'lov qildim", callback_data="pro_paid")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_notification_settings_kb(settings: dict[str, Any]) -> InlineKeyboardMarkup:
+    def state_text(key: str) -> str:
+        return "✅" if settings.get(key) else "❌"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"{state_text('new_content')} Yangi kino", callback_data="notif:new_content")],
+            [InlineKeyboardButton(text=f"{state_text('pro_updates')} Pro xabarlari", callback_data="notif:pro_updates")],
+            [InlineKeyboardButton(text=f"{state_text('ads_updates')} E'lon holati", callback_data="notif:ads_updates")],
+        ]
+    )
+
+
+def build_payment_request_review_kb(request_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"proreq:approve:{request_id}"),
+                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"proreq:reject:{request_id}"),
+            ]
+        ]
+    )
+
+
+def build_ad_manage_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="adch:add")],
+            [InlineKeyboardButton(text="📋 Kanallar ro'yxati", callback_data="adch:list")],
+            [InlineKeyboardButton(text="🗑 Kanal o'chirish", callback_data="adch:delete_menu")],
+        ]
+    )
+
+
+def build_ad_review_kb(ad_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📡 Kanal tanlash", callback_data=f"ad:channel:{ad_id}")],
+            [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"ad:reject:{ad_id}")],
+        ]
+    )
+
+
+def build_ad_channel_pick_kb(ad_id: str, channels: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for channel in channels:
+        channel_id = str(channel.get("id") or "").strip()
+        title = str(channel.get("title") or channel.get("channel_ref") or "Kanal")
+        if channel_id:
+            rows.append([InlineKeyboardButton(text=f"📡 {title}", callback_data=f"ad:post:{ad_id}:{channel_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="Kanal yo'q", callback_data="ad:none")]])
 
 
 def build_subscribe_keyboard(channels: list[dict[str, Any]]) -> InlineKeyboardMarkup:
@@ -1432,12 +2174,17 @@ def build_not_found_request_kb() -> InlineKeyboardMarkup:
 def build_movie_actions_kb(
     movie_id: str,
     is_favorite: bool,
+    likes: int = 0,
+    dislikes: int = 0,
 ) -> InlineKeyboardMarkup:
     fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
     fav_action = "del" if is_favorite else "add"
     builder = InlineKeyboardBuilder()
-    builder.button(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")
-    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}"))
+    builder.row(
+        InlineKeyboardButton(text=f"👍 {max(0, likes)}", callback_data=f"react:like:movie:{movie_id}"),
+        InlineKeyboardButton(text=f"👎 {max(0, dislikes)}", callback_data=f"react:dislike:movie:{movie_id}"),
+    )
     return builder.as_markup()
 
 
@@ -1543,6 +2290,22 @@ def append_views_to_caption(caption: str | None, views: int | None) -> str:
     return views_line
 
 
+def append_reaction_stats_to_caption(
+    caption: str | None,
+    likes: int | None,
+    dislikes: int | None,
+) -> str:
+    likes_count = max(0, int(likes or 0))
+    dislikes_count = max(0, int(dislikes or 0))
+    total = likes_count + dislikes_count
+    rating = round((likes_count / total) * 5, 1) if total else 0.0
+    stats_line = f"👍 {likes_count} | 👎 {dislikes_count} | ⭐ Reyting: {rating}/5"
+    base = (caption or "").strip()
+    if base:
+        return f"{base}\n{stats_line}"
+    return stats_line
+
+
 def build_serial_caption(
     title: str | None,
     description: str | None,
@@ -1561,10 +2324,40 @@ def build_serial_caption(
     return tail
 
 
+def format_pro_payment_code(user_id: int) -> str:
+    return f"PRO-{user_id}"
+
+
+def normalize_button_url(value: str) -> str | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("t.me/"):
+        text = f"https://{text}"
+    if text.startswith("@"):
+        text = f"https://t.me/{text[1:]}"
+    if text.startswith("tg://"):
+        return text
+    parsed = urlparse(text if "://" in text else f"https://{text}")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return parsed.geturl()
+
+
+def format_ad_caption(title: str, description: str) -> str:
+    title_text = title.strip()
+    description_text = description.strip()
+    if title_text and description_text:
+        return f"{title_text}\n\n{description_text}"
+    return title_text or description_text
+
+
 def build_serial_episodes_kb(
     serial_id: str,
     episode_numbers: list[int],
     is_favorite: bool = False,
+    likes: int = 0,
+    dislikes: int = 0,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
@@ -1574,6 +2367,10 @@ def build_serial_episodes_kb(
             text=fav_text,
             callback_data=f"fav:{fav_action}:serial:{serial_id}",
         )
+    )
+    builder.row(
+        InlineKeyboardButton(text=f"👍 {max(0, likes)}", callback_data=f"react:like:serial:{serial_id}"),
+        InlineKeyboardButton(text=f"👎 {max(0, dislikes)}", callback_data=f"react:dislike:serial:{serial_id}"),
     )
     for number in episode_numbers:
         builder.button(text=str(number), callback_data=f"serial_ep:{serial_id}:{number}")
@@ -1753,14 +2550,15 @@ async def send_stored_media(
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     final_caption = append_signature(caption)
+    protect_content = content_should_be_protected(message.from_user.id if message.from_user else None)
     if media_type == "video":
-        await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup)
+        await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "document":
-        await message.answer_document(file_id, caption=final_caption, reply_markup=reply_markup)
+        await message.answer_document(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "photo":
-        await message.answer_photo(file_id, caption=final_caption, reply_markup=reply_markup)
+        await message.answer_photo(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "animation":
-        await message.answer_animation(file_id, caption=final_caption, reply_markup=reply_markup)
+        await message.answer_animation(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
@@ -1776,6 +2574,7 @@ async def send_stored_media(
             message_id=post_data[1],
             caption=final_caption,
             reply_markup=reply_markup,
+            protect_content=protect_content,
         )
     elif media_type == "link":
         post_data = parse_telegram_post_link(file_id)
@@ -1791,11 +2590,20 @@ async def send_stored_media(
                 message_id=post_data[1],
                 caption=final_caption,
                 reply_markup=reply_markup,
+                protect_content=protect_content,
             )
         else:
-            await message.answer(f"{final_caption}\n\nLink: {file_id}", reply_markup=reply_markup)
+            await message.answer(
+                f"{final_caption}\n\nLink: {file_id}",
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
     else:
-        await message.answer(f"{final_caption}\n\nID: {file_id}", reply_markup=reply_markup)
+        await message.answer(
+            f"{final_caption}\n\nID: {file_id}",
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
 
 
 def parse_start_payload(text: str | None) -> str | None:
@@ -1847,6 +2655,7 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
     is_favorite = bool(requester_id and db.is_favorite(requester_id, "serial", serial["id"]))
+    reaction = db.get_reaction_summary("serial", serial["id"])
     displayed_views = int(serial.get("views") or 0) + 1
     serial_caption = build_serial_caption(
         serial["title"],
@@ -1857,9 +2666,21 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
         genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
     )
     serial_caption = append_views_to_caption(serial_caption, displayed_views)
+    serial_caption = append_reaction_stats_to_caption(
+        serial_caption,
+        reaction.get("likes"),
+        reaction.get("dislikes"),
+    )
     await message.answer(
         f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
-        reply_markup=build_serial_episodes_kb(serial["id"], episode_numbers, is_favorite=is_favorite),
+        reply_markup=build_serial_episodes_kb(
+            serial["id"],
+            episode_numbers,
+            is_favorite=is_favorite,
+            likes=int(reaction.get("likes") or 0),
+            dislikes=int(reaction.get("dislikes") or 0),
+        ),
+        protect_content=content_should_be_protected(requester_id),
     )
     db.increment_serial_views(serial["id"])
     return True
@@ -1875,18 +2696,43 @@ async def send_media_to_chat(
 ) -> None:
     final_caption = append_signature(caption)
     chat_id: int | str = int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref
+    protect_content = content_should_be_protected(chat_id if isinstance(chat_id, int) and chat_id > 0 else None)
 
     if media_type == "video":
-        await bot.send_video(chat_id=chat_id, video=file_id, caption=final_caption, reply_markup=reply_markup)
+        await bot.send_video(
+            chat_id=chat_id,
+            video=file_id,
+            caption=final_caption,
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
         return
     if media_type == "document":
-        await bot.send_document(chat_id=chat_id, document=file_id, caption=final_caption, reply_markup=reply_markup)
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file_id,
+            caption=final_caption,
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
         return
     if media_type == "photo":
-        await bot.send_photo(chat_id=chat_id, photo=file_id, caption=final_caption, reply_markup=reply_markup)
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=file_id,
+            caption=final_caption,
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
         return
     if media_type == "animation":
-        await bot.send_animation(chat_id=chat_id, animation=file_id, caption=final_caption, reply_markup=reply_markup)
+        await bot.send_animation(
+            chat_id=chat_id,
+            animation=file_id,
+            caption=final_caption,
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
         return
     if media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
@@ -1899,6 +2745,7 @@ async def send_media_to_chat(
             message_id=post_data[1],
             caption=final_caption,
             reply_markup=reply_markup,
+            protect_content=protect_content,
         )
         return
     if media_type == "link":
@@ -1911,12 +2758,70 @@ async def send_media_to_chat(
                 message_id=post_data[1],
                 caption=final_caption,
                 reply_markup=reply_markup,
+                protect_content=protect_content,
             )
             return
-        await bot.send_message(chat_id=chat_id, text=f"{final_caption}\n\nLink: {file_id}", reply_markup=reply_markup)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"{final_caption}\n\nLink: {file_id}",
+            reply_markup=reply_markup,
+            protect_content=protect_content,
+        )
         return
 
-    await bot.send_message(chat_id=chat_id, text=f"{final_caption}\n\nID: {file_id}", reply_markup=reply_markup)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"{final_caption}\n\nID: {file_id}",
+        reply_markup=reply_markup,
+        protect_content=protect_content,
+    )
+
+
+async def copy_source_message_to_chat(
+    bot: Bot,
+    target_chat_id: int | str,
+    source_chat_id: int | str,
+    source_message_id: int,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    await bot.copy_message(
+        chat_id=target_chat_id,
+        from_chat_id=source_chat_id,
+        message_id=source_message_id,
+        reply_markup=reply_markup,
+    )
+
+
+async def send_ad_preview(
+    target_message: Message,
+    title: str,
+    description: str,
+    *,
+    photo_file_id: str = "",
+    button_text: str = "",
+    button_url: str = "",
+    footer_text: str = "",
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    caption = format_ad_caption(title, description)
+    if footer_text:
+        caption = f"{caption}\n\n{footer_text}" if caption else footer_text
+    markup = reply_markup or build_url_button_kb(button_text, button_url)
+    if photo_file_id:
+        await target_message.answer_photo(photo_file_id, caption=caption, reply_markup=markup)
+        return
+    await target_message.answer(caption or "E'lon", reply_markup=markup)
+
+
+async def post_ad_to_channel(bot: Bot, channel_ref: str, ad: dict[str, Any]) -> None:
+    chat_id: int | str = int(channel_ref) if channel_ref.lstrip("-").isdigit() else channel_ref
+    caption = format_ad_caption(str(ad.get("title") or ""), str(ad.get("description") or ""))
+    markup = build_url_button_kb(str(ad.get("button_text") or ""), str(ad.get("button_url") or ""))
+    photo_file_id = str(ad.get("photo_file_id") or "").strip()
+    if photo_file_id:
+        await bot.send_photo(chat_id=chat_id, photo=photo_file_id, caption=caption, reply_markup=markup)
+        return
+    await bot.send_message(chat_id=chat_id, text=caption or "E'lon", reply_markup=markup)
 
 
 BOT_USERNAME_CACHE: str | None = None
@@ -1937,6 +2842,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         await message.answer("❌ Kino topilmadi.")
         return False
     displayed_views = int(movie.get("views") or 0) + 1
+    reaction = db.get_reaction_summary("movie", movie["id"])
     caption = append_meta_to_caption(
         build_movie_caption(movie["title"], movie["description"]),
         movie.get("year") if isinstance(movie.get("year"), int) else None,
@@ -1944,6 +2850,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         [str(g) for g in movie.get("genres", []) if str(g).strip()],
     )
     caption = append_views_to_caption(caption, displayed_views)
+    caption = append_reaction_stats_to_caption(caption, reaction.get("likes"), reaction.get("dislikes"))
     requester_id = user_id
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
@@ -1956,6 +2863,8 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         reply_markup=build_movie_actions_kb(
             movie["id"],
             is_favorite=is_favorite,
+            likes=int(reaction.get("likes") or 0),
+            dislikes=int(reaction.get("dislikes") or 0),
         ),
     )
     db.increment_movie_views(movie["id"])
@@ -2054,11 +2963,138 @@ async def notify_requesters_for_content(
     return delivered, failed
 
 
+def build_pro_offer_text(user_id: int) -> str:
+    settings = db.get_bot_settings()
+    payment_code = format_pro_payment_code(user_id)
+    return (
+        "👑 PRO obuna\n\n"
+        "✨ Tarif: Yagona PRO\n"
+        f"💰 Narx: {settings['pro_price_text']}\n"
+        f"🗓 Muddat: {settings['pro_duration_days']} kun\n\n"
+        "🧾 To'lov qilayotganda izohga quyidagini yozing:\n"
+        f"`{payment_code}`\n\n"
+        f"Yoki kamida Telegram ID'ingizni yozing: `{user_id}`\n\n"
+        "✅ To'lov qilgach, shu yerda `✅ To'lov qildim` tugmasini bosing."
+    )
+
+
+def build_pro_status_text(user_id: int) -> str:
+    info = db.get_pro_status(user_id)
+    if info["is_pro"]:
+        until_text = info["pro_until"] or "-"
+        return (
+            "💎 Sizda PRO aktiv.\n"
+            f"⏳ Amal qiladi: {until_text}\n"
+            f"💰 Joriy tarif: {info['pro_price_text']}"
+        )
+    if info["pro_status"] == "expired":
+        return (
+            "⌛ Sizning PRO muddati tugagan.\n"
+            f"⏳ Oxirgi muddat: {info['pro_until'] or '-'}\n"
+            f"💰 Joriy narx: {info['pro_price_text']}"
+        )
+    return (
+        "🔒 Sizda PRO aktiv emas.\n"
+        f"💰 Joriy narx: {info['pro_price_text']}\n"
+        "👑 PRO olish tugmasi orqali faollashtiring."
+    )
+
+
+async def notify_admins_about_payment_request(bot: Bot, payment_request: dict[str, Any]) -> None:
+    text = (
+        "💳 Yangi PRO so'rovi\n"
+        f"👤 User ID: {payment_request.get('user_tg_id')}\n"
+        f"🔑 Kod: {payment_request.get('payment_code') or '-'}\n"
+        f"📝 Izoh: {payment_request.get('comment') or '-'}"
+    )
+    markup = build_payment_request_review_kb(str(payment_request.get("id") or ""))
+    proof_media_type = str(payment_request.get("proof_media_type") or "")
+    proof_file_id = str(payment_request.get("proof_file_id") or "")
+    for admin_id in db.list_admin_ids():
+        try:
+            if proof_media_type and proof_file_id:
+                await send_media_to_chat(
+                    bot,
+                    str(admin_id),
+                    proof_media_type,
+                    proof_file_id,
+                    caption=text,
+                    reply_markup=markup,
+                )
+            else:
+                await bot.send_message(chat_id=admin_id, text=text, reply_markup=markup)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            continue
+
+
+async def notify_admins_about_ad(bot: Bot, ad: dict[str, Any]) -> None:
+    footer = f"👤 User ID: {ad.get('user_tg_id')}\n🆔 Ad ID: {ad.get('id')}"
+    markup = build_ad_review_kb(str(ad.get("id") or ""))
+    caption = format_ad_caption(str(ad.get("title") or ""), str(ad.get("description") or ""))
+    caption = f"{caption}\n\n{footer}" if caption else footer
+    photo_file_id = str(ad.get("photo_file_id") or "")
+    button_markup = build_url_button_kb(str(ad.get("button_text") or ""), str(ad.get("button_url") or ""))
+    for admin_id in db.list_admin_ids():
+        try:
+            if photo_file_id:
+                await bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=caption, reply_markup=markup)
+            else:
+                await bot.send_message(chat_id=admin_id, text=caption, reply_markup=markup)
+            if button_markup:
+                await bot.send_message(chat_id=admin_id, text="🔗 Foydalanuvchi tugmasi:", reply_markup=button_markup)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            continue
+
+
+async def notify_new_content_to_pro_users(
+    bot: Bot,
+    content_type: str,
+    content_ref: str,
+    title: str,
+    code: str,
+) -> tuple[int, int]:
+    username = await get_bot_username(bot)
+    if not username:
+        return 0, 0
+    payload = f"m_{content_ref}" if content_type == "movie" else f"s_{content_ref}"
+    deeplink = build_start_deeplink(username, payload)
+    delivered = 0
+    failed = 0
+    for user_id in db.list_active_pro_user_ids():
+        settings = db.get_notification_settings(user_id)
+        if not settings.get("new_content"):
+            continue
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"🆕 Yangi {'kino' if content_type == 'movie' else 'serial'} qo'shildi!\n"
+                    f"🎬 {title}\n"
+                    f"🔢 Kod: {code}\n"
+                    f"🔗 Botda ochish: {deeplink}"
+                ),
+            )
+            delivered += 1
+        except (TelegramBadRequest, TelegramForbiddenError):
+            failed += 1
+    return delivered, failed
+
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4ww").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "7903688837,7546181748"))
+PRO_PRICE_TEXT_DEFAULT = os.getenv("PRO_PRICE_TEXT", "50 000 so'm / 30 kun").strip() or "50 000 so'm / 30 kun"
+PRO_DURATION_DAYS_DEFAULT = max(1, int(os.getenv("PRO_DURATION_DAYS", "30") or 30))
+PRO_PAYMENT_LINK_1 = os.getenv(
+    "PRO_PAYMENT_LINK_1",
+    "https://t.me/DanatlarBot/danat?startapp=Sara_Kinolar_o1",
+).strip()
+PRO_PAYMENT_LINK_2 = os.getenv(
+    "PRO_PAYMENT_LINK_2",
+    "https://danatlar.uz/Sara_Kinolar_o1",
+).strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi. .env faylga BOT_TOKEN yozing.")
@@ -2079,6 +3115,10 @@ def guard_admin(message: Message) -> bool:
     return bool(message.from_user and db.is_admin(message.from_user.id))
 
 
+def has_active_pro(message: Message) -> bool:
+    return bool(message.from_user and db.is_pro_active(message.from_user.id))
+
+
 @router.chat_join_request()
 async def on_chat_join_request(join_request: ChatJoinRequest) -> None:
     chat_refs = {str(join_request.chat.id)}
@@ -2090,6 +3130,8 @@ async def on_chat_join_request(join_request: ChatJoinRequest) -> None:
 
 
 async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[str, Any]]]:
+    if db.is_pro_active(user_id):
+        return True, []
     channels = db.get_required_channels()
     if not channels:
         return True, []
@@ -2111,9 +3153,9 @@ async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[s
 
 async def ask_for_subscription(message: Message, channels: list[dict[str, Any]]) -> None:
     text_lines = [
-        "‼️ Botdan foydalanish uchun quyida keltirilgan barcha kanallarga obuna bo'lishingiz kerak!",
+        "🚫 Botdan foydalanish uchun quyidagi kanallarga obuna bo'lishingiz kerak.",
         "",
-        "👇 Majburiy kanallar:",
+        "📢 Majburiy kanallar:",
     ]
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
@@ -2154,9 +3196,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     admin = db.is_admin(message.from_user.id)
     text = (
-        "🎬 Assalomu alaykum, Kino Qidiruvi Botga xush kelibsiz!\n\n"
+        "🎬 Assalomu alaykum, Kino botga xush kelibsiz.\n\n"
         "🔎 Kino yoki serial kodini yuboring.\n"
-        "Yoki tugmalar orqali nom bo'yicha qidiruv va sevimlilarni ishlating."
+        "🔥 Trending, 🏆 top kontent, 👑 PRO va 📢 e'lon bo'limlari ham tayyor.\n"
+        + ("\n🛠 Siz adminsiz — user menyu va admin panel siz uchun ochiq." if admin else "")
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
 
@@ -2207,7 +3250,7 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🛠 Admin panelga xush kelibsiz!", reply_markup=admin_menu_kb())
+    await message.answer("🛠 Admin panel ochildi.\nQuyidagi boshqaruv tugmalaridan foydalaning.", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
@@ -2215,7 +3258,740 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🏠 Asosiy menyu", reply_markup=main_menu_kb(True))
+    await message.answer("🏠 Asosiy user menyu ochildi.", reply_markup=main_menu_kb(True))
+
+
+@router.message(F.text.in_({BTN_PRO_BUY, "Pro olish"}))
+async def pro_buy(message: Message) -> None:
+    if not message.from_user:
+        return
+    db.add_user(message.from_user.id, message.from_user.full_name)
+    if db.is_admin(message.from_user.id):
+        await message.answer("👑 Siz adminsiz.\nSiz uchun PRO cheksiz va barcha premium funksiyalar ochiq.", reply_markup=main_menu_kb(True))
+        return
+    await message.answer(build_pro_offer_text(message.from_user.id), reply_markup=build_pro_purchase_kb())
+
+
+@router.callback_query(F.data == "pro_paid")
+async def pro_paid_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    await state.set_state(PaymentState.waiting_proof)
+    await callback.message.answer(
+        "💳 To'lov skrini yoki hujjatini yuboring.\nO'tkazib yuborish uchun `/skip` yozing.",
+        reply_markup=cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(PaymentState.waiting_proof)
+async def pro_payment_proof(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    proof_media_type = ""
+    proof_file_id = ""
+    if is_skip_text(text):
+        pass
+    elif message.photo:
+        proof_media_type = "photo"
+        proof_file_id = message.photo[-1].file_id
+    elif message.document:
+        proof_media_type = "document"
+        proof_file_id = message.document.file_id
+    else:
+        await message.answer("Rasm yoki document yuboring, yoki `/skip` yozing.")
+        return
+    await state.update_data(
+        payment_proof_media_type=proof_media_type,
+        payment_proof_file_id=proof_file_id,
+    )
+    await state.set_state(PaymentState.waiting_comment)
+    await message.answer(
+        "📝 Qo'shimcha izoh yuboring.\nMasalan: Danatda aynan qaysi comment yozganingizni kiriting.\nO'tkazib yuborish uchun `/skip`.",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(PaymentState.waiting_comment)
+async def pro_payment_comment(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    comment = "" if is_skip_text(text) else text[:500]
+    data = await state.get_data()
+    payment_request_id = db.create_payment_request(
+        user_tg_id=message.from_user.id,
+        payment_code=format_pro_payment_code(message.from_user.id),
+        proof_media_type=str(data.get("payment_proof_media_type") or ""),
+        proof_file_id=str(data.get("payment_proof_file_id") or ""),
+        comment=comment,
+    )
+    await state.clear()
+    request_data = db.get_payment_request(payment_request_id)
+    if request_data:
+        await notify_admins_about_payment_request(message.bot, request_data)
+    await message.answer(
+        "✅ PRO so'rovingiz yuborildi.\nAdmin tekshiradi va tasdiqlasa PRO yoqiladi.",
+        reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
+    )
+
+
+@router.message(F.text.in_({BTN_PRO_STATUS, "Pro holatim"}))
+async def pro_status(message: Message) -> None:
+    if not message.from_user:
+        return
+    await message.answer(build_pro_status_text(message.from_user.id))
+
+
+@router.message(F.text.in_({BTN_NOTIFICATIONS, "Bildirishnomalar"}))
+async def notification_settings(message: Message) -> None:
+    if not message.from_user:
+        return
+    settings = db.get_notification_settings(message.from_user.id)
+    await message.answer("🔔 Bildirishnoma sozlamalari\nQuyidagilarni yoqib yoki o'chirib boshqaring:", reply_markup=build_notification_settings_kb(settings))
+
+
+@router.callback_query(F.data.startswith("notif:"))
+async def notification_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    _, key = callback.data.split(":", 1)
+    settings = db.toggle_notification_setting(callback.from_user.id, key)
+    await callback.message.edit_reply_markup(reply_markup=build_notification_settings_kb(settings))
+    await callback.answer("✅ Yangilandi")
+
+
+@router.message(F.text.in_({BTN_TRENDING, "Trending"}))
+async def trending_content(message: Message) -> None:
+    if not message.from_user:
+        return
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+    items = db.list_trending_content(limit=20)
+    kb = build_search_results_kb(items)
+    if not kb:
+        await message.answer("📭 Hozircha trending kontent topilmadi.")
+        return
+    await message.answer("🔥 Eng qizg'in trending kontentlar:", reply_markup=kb)
+
+
+@router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
+async def top_viewed_content(message: Message) -> None:
+    if not message.from_user:
+        return
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+    items = db.list_top_viewed_content(limit=20)
+    kb = build_search_results_kb(items)
+    if not kb:
+        await message.answer("📭 Hozircha top kontent topilmadi.")
+        return
+    await message.answer("🏆 Eng ko'p ko'rilgan kontentlar:", reply_markup=kb)
+
+
+@router.message(F.text.in_({BTN_CREATE_AD, "E'lon berish"}))
+async def create_ad_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    if not has_active_pro(message):
+        await message.answer(
+            "🔒 E'lon berish faqat PRO foydalanuvchilar uchun.\n\n" + build_pro_offer_text(message.from_user.id),
+            reply_markup=build_pro_purchase_kb(),
+        )
+        return
+    await state.set_state(AdCreateState.waiting_photo)
+    await message.answer(
+        "🖼 E'lon uchun rasm yuboring.\nRasmsiz e'lon uchun `/skip` yozing.",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(AdCreateState.waiting_photo)
+async def create_ad_photo(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    photo_file_id = ""
+    if is_skip_text(text):
+        pass
+    elif message.photo:
+        photo_file_id = message.photo[-1].file_id
+    else:
+        await message.answer("Rasm yuboring yoki `/skip` yozing.")
+        return
+    await state.update_data(ad_photo_file_id=photo_file_id)
+    await state.set_state(AdCreateState.waiting_title)
+    await message.answer("📝 E'lon sarlavhasini kiriting:", reply_markup=cancel_kb())
+
+
+@router.message(AdCreateState.waiting_title)
+async def create_ad_title(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    if len(text) < 3:
+        await message.answer("Sarlavha kamida 3 ta belgi bo'lsin.")
+        return
+    await state.update_data(ad_title=text[:120])
+    await state.set_state(AdCreateState.waiting_description)
+    await message.answer("📄 E'lon tavsifini kiriting:", reply_markup=cancel_kb())
+
+
+@router.message(AdCreateState.waiting_description)
+async def create_ad_description(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    if len(text) < 5:
+        await message.answer("Tavsif kamida 5 ta belgi bo'lsin.")
+        return
+    await state.update_data(ad_description=text[:850])
+    await state.set_state(AdCreateState.waiting_button_choice)
+    await message.answer("🔘 Inline tugma kerakmi?", reply_markup=build_inline_choice_kb("adbtn"))
+
+
+@router.callback_query(StateFilter(AdCreateState.waiting_button_choice), F.data.in_({"adbtn:yes", "adbtn:no"}))
+async def create_ad_button_choice_inline(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not callback.message:
+        await state.clear()
+        await callback.answer()
+        return
+    if callback.data == "adbtn:yes":
+        await state.set_state(AdCreateState.waiting_button_text)
+        await callback.message.answer("🔤 Tugma matnini kiriting:", reply_markup=cancel_kb())
+        await callback.answer()
+        return
+    await state.update_data(ad_button_text="", ad_button_url="")
+    data = await state.get_data()
+    await send_ad_preview(
+        callback.message,
+        title=str(data.get("ad_title") or ""),
+        description=str(data.get("ad_description") or ""),
+        photo_file_id=str(data.get("ad_photo_file_id") or ""),
+        footer_text="Tasdiqlash uchun quyidagi tugmani bosing.",
+    )
+    await state.set_state(AdCreateState.waiting_confirm)
+    await callback.message.answer("E'lonni yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+    await callback.answer()
+
+
+@router.message(AdCreateState.waiting_button_choice)
+async def create_ad_button_choice(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    if is_yes_text(text):
+        await state.set_state(AdCreateState.waiting_button_text)
+        await message.answer("🔤 Tugma matnini kiriting:", reply_markup=cancel_kb())
+        return
+    if not is_no_text(text):
+        await message.answer("Iltimos, `Ha` yoki `Yo'q` tanlang.", reply_markup=build_inline_choice_kb("adbtn"))
+        return
+    await state.update_data(ad_button_text="", ad_button_url="")
+    data = await state.get_data()
+    await send_ad_preview(
+        message,
+        title=str(data.get("ad_title") or ""),
+        description=str(data.get("ad_description") or ""),
+        photo_file_id=str(data.get("ad_photo_file_id") or ""),
+        footer_text="Tasdiqlash uchun quyidagi tugmani bosing.",
+    )
+    await state.set_state(AdCreateState.waiting_confirm)
+    await message.answer("E'lonni yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+
+
+@router.message(AdCreateState.waiting_button_text)
+async def create_ad_button_text(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    if len(text) < 2:
+        await message.answer("Tugma matni juda qisqa.")
+        return
+    await state.update_data(ad_button_text=text[:60])
+    await state.set_state(AdCreateState.waiting_button_url)
+    await message.answer("🔗 Tugma havolasini kiriting:", reply_markup=cancel_kb())
+
+
+@router.message(AdCreateState.waiting_button_url)
+async def create_ad_button_url(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    url = normalize_button_url(text)
+    if not url:
+        await message.answer("To'g'ri havola yuboring. Masalan: https://t.me/kanal")
+        return
+    await state.update_data(ad_button_url=url)
+    data = await state.get_data()
+    await send_ad_preview(
+        message,
+        title=str(data.get("ad_title") or ""),
+        description=str(data.get("ad_description") or ""),
+        photo_file_id=str(data.get("ad_photo_file_id") or ""),
+        button_text=str(data.get("ad_button_text") or ""),
+        button_url=str(data.get("ad_button_url") or ""),
+        footer_text="Tasdiqlash uchun quyidagi tugmani bosing.",
+    )
+    await state.set_state(AdCreateState.waiting_confirm)
+    await message.answer("E'lonni yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+
+
+@router.message(AdCreateState.waiting_confirm)
+async def create_ad_confirm(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+        return
+    if not is_confirm_text(text):
+        await message.answer("Tasdiqlash uchun `✅ Tasdiqlash` ni bosing.", reply_markup=confirm_kb())
+        return
+    data = await state.get_data()
+    ad_id = db.create_ad(
+        user_tg_id=message.from_user.id,
+        title=str(data.get("ad_title") or ""),
+        description=str(data.get("ad_description") or ""),
+        photo_file_id=str(data.get("ad_photo_file_id") or ""),
+        button_text=str(data.get("ad_button_text") or ""),
+        button_url=str(data.get("ad_button_url") or ""),
+    )
+    await state.clear()
+    ad = db.get_ad(ad_id)
+    if ad:
+        await notify_admins_about_ad(message.bot, ad)
+    await message.answer(
+        "✅ E'lon moderatorga yuborildi.\nTasdiqlansa kanalga joylanadi.",
+        reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
+    )
+
+
+@router.message(F.text.in_({BTN_MY_ADS, "E'lonlarim"}))
+async def my_ads(message: Message) -> None:
+    if not message.from_user:
+        return
+    ads = db.list_user_ads(message.from_user.id, limit=20)
+    if not ads:
+        await message.answer("📭 Sizda hali e'lon yo'q.\n📢 Yangi e'lon berish uchun tegishli tugmadan foydalaning.")
+        return
+    lines = ["🗂 E'lonlaringiz:"]
+    for idx, ad in enumerate(ads, start=1):
+        lines.append(
+            f"{idx}. {ad.get('title') or '-'} | status: {ad.get('status') or '-'}"
+        )
+    await message.answer("\n".join(lines))
+
+
+@router.message(F.text.in_({BTN_PRO_MANAGE, "Pro boshqarish"}))
+async def pro_manage_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    await state.set_state(ProManageState.waiting_input)
+    await message.answer(
+        "👑 PRO boshqarish\n\nFormat:\n`123456789 on`\n`123456789 off`\n\n📝 Oxiriga ixtiyoriy izoh ham yozishingiz mumkin.",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(ProManageState.waiting_input)
+async def pro_manage_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    parts = text.split()
+    if len(parts) < 2 or not parts[0].isdigit() or parts[1].lower() not in {"on", "off"}:
+        await message.answer("To'g'ri format: `123456789 on` yoki `123456789 off`")
+        return
+    user_id = int(parts[0])
+    enabled = parts[1].lower() == "on"
+    note = " ".join(parts[2:]).strip()
+    db.set_pro_state(user_id, enabled, admin_id=message.from_user.id, note=note)
+    await state.clear()
+    if db.get_notification_settings(user_id).get("pro_updates"):
+        try:
+            await message.bot.send_message(
+                chat_id=user_id,
+                text="👑 Sizga PRO yoqildi!" if enabled else "🔒 Sizning PRO o'chirildi.",
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+    await message.answer(
+        "✅ PRO yoqildi." if enabled else "✅ PRO o'chirildi.",
+        reply_markup=admin_menu_kb(),
+    )
+
+
+@router.message(F.text.in_({BTN_PRO_PRICE, "Pro narxi"}))
+async def pro_price_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    current = db.get_bot_settings()["pro_price_text"]
+    await state.set_state(ProPriceState.waiting_price)
+    await message.answer(f"💰 Joriy PRO narxi: {current}\n\n✍️ Yangi narx matnini yuboring:", reply_markup=cancel_kb())
+
+
+@router.message(ProPriceState.waiting_price)
+async def pro_price_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    if len(text) < 3:
+        await message.answer("Narx matni juda qisqa.")
+        return
+    db.set_pro_price_text(text)
+    await state.clear()
+    await message.answer("✅ PRO narxi muvaffaqiyatli yangilandi.", reply_markup=admin_menu_kb())
+
+
+@router.message(F.text.in_({BTN_PRO_DURATION, "Pro muddati"}))
+async def pro_duration_start(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    current = db.get_bot_settings()["pro_duration_days"]
+    await state.set_state(ProDurationState.waiting_days)
+    await message.answer(
+        f"⏳ Joriy PRO muddati: {current} kun\n\n✍️ Yangi kun sonini yuboring:",
+        reply_markup=cancel_kb(),
+    )
+
+
+@router.message(ProDurationState.waiting_days)
+async def pro_duration_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    if not text.isdigit():
+        await message.answer("⚠️ Faqat son yuboring. Masalan: `30`")
+        return
+    days = int(text)
+    if days < 1 or days > 3650:
+        await message.answer("⚠️ Muddat 1 kundan 3650 kungacha bo'lishi kerak.")
+        return
+    db.set_pro_duration_days(days)
+    await state.clear()
+    await message.answer(f"✅ PRO muddati {days} kunga yangilandi.", reply_markup=admin_menu_kb())
+
+
+@router.message(F.text.in_({BTN_PRO_REQUESTS, "Pro so'rovlar"}))
+async def pro_requests(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    requests = db.list_pending_payment_requests(limit=15)
+    if not requests:
+        await message.answer("📭 Kutilayotgan PRO so'rovlar yo'q.")
+        return
+    for request in requests:
+        text = (
+            "💳 PRO so'rovi\n"
+            f"👤 User ID: {request.get('user_tg_id')}\n"
+            f"🔑 Kod: {request.get('payment_code') or '-'}\n"
+            f"📝 Izoh: {request.get('comment') or '-'}"
+        )
+        proof_media_type = str(request.get("proof_media_type") or "")
+        proof_file_id = str(request.get("proof_file_id") or "")
+        markup = build_payment_request_review_kb(str(request.get("id") or ""))
+        if proof_media_type and proof_file_id:
+            await send_stored_media(
+                message,
+                proof_media_type,
+                proof_file_id,
+                caption=text,
+                reply_markup=markup,
+            )
+        else:
+            await message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("proreq:"))
+async def pro_request_review(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    _, action, request_id = callback.data.split(":", 2)
+    request = db.get_payment_request(request_id)
+    if not request:
+        await callback.answer("So'rov topilmadi", show_alert=True)
+        return
+    user_id = int(request.get("user_tg_id") or 0)
+    if action == "approve":
+        db.update_payment_request_status(request_id, "approved", reviewed_by=callback.from_user.id)
+        db.set_pro_state(user_id, True, admin_id=callback.from_user.id, note="To'lov tasdiqlandi")
+        if db.get_notification_settings(user_id).get("pro_updates"):
+            try:
+                await callback.bot.send_message(chat_id=user_id, text="✅ To'lov tasdiqlandi. PRO faollashtirildi!")
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+        await callback.answer("✅ PRO yoqildi")
+    else:
+        db.update_payment_request_status(request_id, "rejected", reviewed_by=callback.from_user.id)
+        if db.get_notification_settings(user_id).get("pro_updates"):
+            try:
+                await callback.bot.send_message(chat_id=user_id, text="❌ PRO so'rovingiz rad etildi. Admin bilan bog'laning.")
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+        await callback.answer("❌ Rad etildi")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+
+@router.message(F.text.in_({BTN_AD_CHANNELS, "E'lon kanalari"}))
+async def ad_channels_menu(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    await message.answer("📡 E'lon kanalari boshqaruvi\nKanal qo'shish, ko'rish va o'chirish shu yerda.", reply_markup=build_ad_manage_kb())
+
+
+@router.callback_query(F.data == "adch:add")
+async def ad_channel_add_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    await state.set_state(AddAdChannelState.waiting_input)
+    if callback.message:
+        await callback.message.answer("Kanal username yoki ID yuboring: @kanal yoki -100...", reply_markup=cancel_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adch:list")
+async def ad_channel_list(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    channels = db.list_ad_channels()
+    if not channels:
+        await callback.message.answer("📭 E'lon kanalari yo'q.")
+    else:
+        lines = ["📡 E'lon kanalari:"]
+        for idx, channel in enumerate(channels, start=1):
+            lines.append(f"{idx}. {channel.get('title') or channel.get('channel_ref')} ({channel.get('channel_ref')})")
+        await callback.message.answer("\n".join(lines))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adch:delete_menu")
+async def ad_channel_delete_menu(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    channels = db.list_ad_channels()
+    if not channels:
+        await callback.message.answer("📭 O'chirish uchun kanal yo'q.")
+        await callback.answer()
+        return
+    rows = [
+        [InlineKeyboardButton(text=f"🗑 {channel.get('title') or channel.get('channel_ref')}", callback_data=f"adch:del:{channel.get('id')}")]
+        for channel in channels
+        if channel.get("id")
+    ]
+    await callback.message.answer("O'chiriladigan kanalni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("adch:del:"))
+async def ad_channel_delete(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    channel_id = callback.data.split(":", 2)[2]
+    removed = db.remove_ad_channel(channel_id)
+    await callback.answer("✅ O'chirildi" if removed else "❌ Topilmadi")
+    if removed:
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+
+@router.message(AddAdChannelState.waiting_input)
+async def ad_channel_add_finish(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    channel_ref = normalize_channel_ref_input(text)
+    if not channel_ref:
+        await message.answer("To'g'ri kanal username yoki ID yuboring.")
+        return
+    title = channel_ref
+    try:
+        chat = await message.bot.get_chat(channel_ref)
+        title = str(getattr(chat, "title", "") or getattr(chat, "username", "") or channel_ref)
+    except TelegramBadRequest:
+        pass
+    created = db.add_ad_channel(channel_ref, title=title)
+    await state.clear()
+    await message.answer("✅ E'lon kanali qo'shildi." if created else "ℹ️ Bu kanal allaqachon mavjud.", reply_markup=admin_menu_kb())
+
+
+@router.message(F.text.in_({BTN_ADS, "E'lonlar"}))
+async def ads_review(message: Message) -> None:
+    if not message.from_user or not guard_admin(message):
+        return
+    ads = db.list_pending_ads(limit=15)
+    if not ads:
+        await message.answer("📭 Kutilayotgan e'lonlar yo'q.")
+        return
+    for ad in ads:
+        await send_ad_preview(
+            message,
+            title=str(ad.get("title") or ""),
+            description=str(ad.get("description") or ""),
+            photo_file_id=str(ad.get("photo_file_id") or ""),
+            button_text=str(ad.get("button_text") or ""),
+            button_url=str(ad.get("button_url") or ""),
+            footer_text=f"👤 User ID: {ad.get('user_tg_id')}\n🆔 ID: {ad.get('id')}",
+            reply_markup=build_ad_review_kb(str(ad.get("id") or "")),
+        )
+
+
+@router.callback_query(F.data.startswith("ad:channel:"))
+async def ad_choose_channel(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    ad_id = callback.data.split(":", 2)[2]
+    channels = db.list_ad_channels()
+    if not channels:
+        await callback.answer("Avval e'lon kanalini qo'shing", show_alert=True)
+        return
+    await callback.message.answer(
+        "Qaysi kanalga joylansin?",
+        reply_markup=build_ad_channel_pick_kb(ad_id, channels),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ad:post:"))
+async def ad_post_to_channel(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    _, _, ad_id, channel_id = callback.data.split(":", 3)
+    ad = db.get_ad(ad_id)
+    channel = db.get_ad_channel(channel_id)
+    if not ad or not channel:
+        await callback.answer("Ma'lumot topilmadi", show_alert=True)
+        return
+    channel_ref = str(channel.get("channel_ref") or "")
+    try:
+        await post_ad_to_channel(callback.bot, channel_ref, ad)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        await callback.answer("Kanalga joylab bo'lmadi", show_alert=True)
+        if callback.message:
+            await callback.message.answer(f"❌ Joylashda xatolik: {exc}")
+        return
+    db.update_ad_status(ad_id, "posted", reviewed_by=callback.from_user.id, channel_ref=channel_ref)
+    user_id = int(ad.get("user_tg_id") or 0)
+    if db.get_notification_settings(user_id).get("ads_updates"):
+        try:
+            await callback.bot.send_message(
+                chat_id=user_id,
+                text=f"✅ E'loningiz {channel.get('title') or channel_ref} kanaliga joylandi.",
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+    await callback.answer("✅ Kanalga joylandi")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data.startswith("ad:reject:"))
+async def ad_reject(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    ad_id = callback.data.split(":", 2)[2]
+    ad = db.get_ad(ad_id)
+    if not ad:
+        await callback.answer("E'lon topilmadi", show_alert=True)
+        return
+    db.update_ad_status(ad_id, "rejected", reviewed_by=callback.from_user.id)
+    user_id = int(ad.get("user_tg_id") or 0)
+    if db.get_notification_settings(user_id).get("ads_updates"):
+        try:
+            await callback.bot.send_message(chat_id=user_id, text="❌ E'loningiz moderator tomonidan rad etildi.")
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
+    await callback.answer("❌ Rad etildi")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+
+@router.callback_query(F.data == "ad:none")
+async def ad_none(callback: CallbackQuery) -> None:
+    await callback.answer("Avval kanal qo'shing.", show_alert=True)
 
 
 @router.message(F.text.in_({BTN_SUBS, "Majburiy obuna"}))
@@ -2638,9 +4414,21 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
             title=movie.title,
             movie=saved_movie,
         )
+        pro_delivered = 0
+        pro_failed = 0
+        if saved_movie:
+            pro_delivered, pro_failed = await notify_new_content_to_pro_users(
+                message.bot,
+                "movie",
+                str(saved_movie.get("id") or ""),
+                movie.title,
+                movie.code,
+            )
         note = ""
         if delivered or failed:
             note = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+        if pro_delivered or pro_failed:
+            note += f"\n👑 PRO xabar: {pro_delivered} ta yetkazildi, {pro_failed} ta xato."
         await message.answer(
             f"✅ Kino muvaffaqiyatli saqlandi!{note}",
             reply_markup=admin_menu_kb(),
@@ -2882,6 +4670,15 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
             )
             if delivered or failed:
                 notify_text = f"\n📣 So'rov yuborganlarga xabar: {delivered} ta yetkazildi, {failed} ta xato."
+            pro_delivered, pro_failed = await notify_new_content_to_pro_users(
+                message.bot,
+                "serial",
+                serial_id,
+                str(serial.get("title") or "Serial"),
+                str(serial.get("code") or ""),
+            )
+            if pro_delivered or pro_failed:
+                notify_text += f"\n👑 PRO xabar: {pro_delivered} ta yetkazildi, {pro_failed} ta xato."
         await state.clear()
         await message.answer(
             f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
@@ -3397,10 +5194,132 @@ async def broadcast_start(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.set_state(BroadcastState.waiting_message)
-    await message.answer("📣 Yuboriladigan habarni kiriting:", reply_markup=cancel_kb())
+    await message.answer(
+        "📣 Broadcast uchun xabar yuboring.\n\n✅ Qo'llab-quvvatlanadi: matn, rasm, video, gif, document, audio, voice.",
+        reply_markup=cancel_kb(),
+    )
 
 
 @router.message(BroadcastState.waiting_message)
+async def broadcast_collect_message(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    await state.update_data(
+        broadcast_source_chat_id=message.chat.id,
+        broadcast_source_message_id=message.message_id,
+        broadcast_button_text="",
+        broadcast_button_url="",
+    )
+    await state.set_state(BroadcastState.waiting_button_choice)
+    await message.answer("Inline tugma kerakmi?", reply_markup=build_inline_choice_kb("bcbtn"))
+
+
+@router.callback_query(StateFilter(BroadcastState.waiting_button_choice), F.data.in_({"bcbtn:yes", "bcbtn:no"}))
+async def broadcast_button_choice_inline(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
+        await state.clear()
+        await callback.answer()
+        return
+    if callback.data == "bcbtn:yes":
+        await state.set_state(BroadcastState.waiting_button_text)
+        await callback.message.answer("🔤 Tugma matnini kiriting:", reply_markup=cancel_kb())
+        await callback.answer()
+        return
+    data = await state.get_data()
+    await copy_source_message_to_chat(
+        callback.bot,
+        callback.message.chat.id,
+        int(data["broadcast_source_chat_id"]),
+        int(data["broadcast_source_message_id"]),
+        reply_markup=None,
+    )
+    await state.set_state(BroadcastState.waiting_confirm)
+    await callback.message.answer("Yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+    await callback.answer()
+
+
+@router.message(BroadcastState.waiting_button_choice)
+async def broadcast_button_choice(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    if is_yes_text(text):
+        await state.set_state(BroadcastState.waiting_button_text)
+        await message.answer("🔤 Tugma matnini kiriting:", reply_markup=cancel_kb())
+        return
+    if not is_no_text(text):
+        await message.answer("Iltimos, `Ha` yoki `Yo'q` tanlang.", reply_markup=build_inline_choice_kb("bcbtn"))
+        return
+    data = await state.get_data()
+    await copy_source_message_to_chat(
+        message.bot,
+        message.chat.id,
+        int(data["broadcast_source_chat_id"]),
+        int(data["broadcast_source_message_id"]),
+        reply_markup=None,
+    )
+    await state.set_state(BroadcastState.waiting_confirm)
+    await message.answer("Yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+
+
+@router.message(BroadcastState.waiting_button_text)
+async def broadcast_button_text(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    if len(text) < 2:
+        await message.answer("Tugma matni juda qisqa.")
+        return
+    await state.update_data(broadcast_button_text=text[:60])
+    await state.set_state(BroadcastState.waiting_button_url)
+    await message.answer("🔗 Tugma havolasini kiriting:", reply_markup=cancel_kb())
+
+
+@router.message(BroadcastState.waiting_button_url)
+async def broadcast_button_url(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not guard_admin(message):
+        await state.clear()
+        return
+    text = (message.text or "").strip()
+    if is_cancel_text(text):
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+    url = normalize_button_url(text)
+    if not url:
+        await message.answer("To'g'ri havola yuboring. Masalan: https://t.me/kanal")
+        return
+    await state.update_data(broadcast_button_url=url)
+    data = await state.get_data()
+    markup = build_url_button_kb(str(data.get("broadcast_button_text") or ""), str(data.get("broadcast_button_url") or ""))
+    await copy_source_message_to_chat(
+        message.bot,
+        message.chat.id,
+        int(data["broadcast_source_chat_id"]),
+        int(data["broadcast_source_message_id"]),
+        reply_markup=markup,
+    )
+    await state.set_state(BroadcastState.waiting_confirm)
+    await message.answer("Yuborishni tasdiqlaysizmi?", reply_markup=confirm_kb())
+
+
+@router.message(BroadcastState.waiting_confirm)
 async def broadcast_finish(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         await state.clear()
@@ -3410,34 +5329,49 @@ async def broadcast_finish(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
-    if not text:
-        await message.answer("Habar matnini yuboring.")
+    if not is_confirm_text(text):
+        await message.answer("Tasdiqlash uchun `✅ Tasdiqlash` ni bosing.", reply_markup=confirm_kb())
         return
-
+    data = await state.get_data()
     user_ids = db.list_user_ids()
     if not user_ids:
         await state.clear()
         await message.answer("📭 Yuborish uchun foydalanuvchilar topilmadi.", reply_markup=admin_menu_kb())
         return
-
+    reply_markup = build_url_button_kb(
+        str(data.get("broadcast_button_text") or ""),
+        str(data.get("broadcast_button_url") or ""),
+    )
+    source_chat_id = int(data["broadcast_source_chat_id"])
+    source_message_id = int(data["broadcast_source_message_id"])
     await message.answer(f"📤 {len(user_ids)} ta foydalanuvchiga yuborilmoqda...")
     success = 0
     failed = 0
-
     for user_id in user_ids:
         try:
-            await message.bot.send_message(chat_id=user_id, text=text)
+            await copy_source_message_to_chat(
+                message.bot,
+                user_id,
+                source_chat_id,
+                source_message_id,
+                reply_markup=reply_markup,
+            )
             success += 1
         except TelegramRetryAfter as exc:
             await asyncio.sleep(float(exc.retry_after))
             try:
-                await message.bot.send_message(chat_id=user_id, text=text)
+                await copy_source_message_to_chat(
+                    message.bot,
+                    user_id,
+                    source_chat_id,
+                    source_message_id,
+                    reply_markup=reply_markup,
+                )
                 success += 1
             except (TelegramBadRequest, TelegramForbiddenError):
                 failed += 1
         except (TelegramBadRequest, TelegramForbiddenError):
             failed += 1
-
     await state.clear()
     await message.answer(
         "✅ Yuborish yakunlandi.\n"
@@ -3517,7 +5451,11 @@ async def stats(message: Message) -> None:
         f"📢 Majburiy kanallar: {s['channels']}\n"
         f"📥 Kod so'rovlari: {s['requests']}\n"
         f"📝 Ochiq kontent so'rovlari: {s['open_content_requests']}\n"
-        f"⭐ Sevimlilar: {s['favorites']}"
+        f"⭐ Sevimlilar: {s['favorites']}\n"
+        f"👑 Aktiv PRO userlar: {s['active_pro_users']}\n"
+        f"💳 Kutilayotgan PRO so'rovlar: {s['pending_payments']}\n"
+        f"📰 Kutilayotgan e'lonlar: {s['pending_ads']}\n"
+        f"👍👎 Reaksiyalar: {s['reactions']}"
     )
     await message.answer(text)
 
@@ -3748,10 +5686,13 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
     try:
         if content_type == "movie":
             is_favorite = db.is_favorite(callback.from_user.id, "movie", content_ref)
+            reaction = db.get_reaction_summary("movie", content_ref)
             await callback.message.edit_reply_markup(
                 reply_markup=build_movie_actions_kb(
                     content_ref,
                     is_favorite,
+                    likes=int(reaction.get("likes") or 0),
+                    dislikes=int(reaction.get("dislikes") or 0),
                 ),
             )
         else:
@@ -3760,15 +5701,56 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
                 episodes = db.list_serial_episodes(content_ref)
                 episode_numbers = [row["episode_number"] for row in episodes]
                 is_favorite = db.is_favorite(callback.from_user.id, "serial", content_ref)
+                reaction = db.get_reaction_summary("serial", content_ref)
                 await callback.message.edit_reply_markup(
                     reply_markup=build_serial_episodes_kb(
                         serial_id=content_ref,
                         episode_numbers=episode_numbers,
                         is_favorite=is_favorite,
+                        likes=int(reaction.get("likes") or 0),
+                        dislikes=int(reaction.get("dislikes") or 0),
                     )
                 )
     except TelegramBadRequest:
         pass
+
+
+@router.callback_query(F.data.startswith("react:"))
+async def reaction_toggle(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 3)
+    if len(parts) != 4:
+        await callback.answer("Xato")
+        return
+    _, reaction_name, content_type, content_ref = parts
+    summary = db.set_reaction(callback.from_user.id, content_type, content_ref, reaction_name)
+    is_favorite = db.is_favorite(callback.from_user.id, content_type, content_ref)
+    try:
+        if content_type == "movie":
+            await callback.message.edit_reply_markup(
+                reply_markup=build_movie_actions_kb(
+                    content_ref,
+                    is_favorite,
+                    likes=int(summary.get("likes") or 0),
+                    dislikes=int(summary.get("dislikes") or 0),
+                )
+            )
+        elif content_type == "serial":
+            episodes = db.list_serial_episodes(content_ref)
+            await callback.message.edit_reply_markup(
+                reply_markup=build_serial_episodes_kb(
+                    serial_id=content_ref,
+                    episode_numbers=[row["episode_number"] for row in episodes],
+                    is_favorite=is_favorite,
+                    likes=int(summary.get("likes") or 0),
+                    dislikes=int(summary.get("dislikes") or 0),
+                )
+            )
+    except TelegramBadRequest:
+        pass
+    await callback.answer(f"⭐ Reyting: {summary.get('rating', 0.0)}/5")
 
 
 @router.callback_query(F.data.startswith("short:ask:movie:"))
@@ -3961,10 +5943,10 @@ async def inline_search(inline_query: InlineQuery) -> None:
 @router.message(F.text.in_({BTN_CANCEL, "Bekor qilish"}))
 async def cancel_any(message: Message, state: FSMContext) -> None:
     await state.clear()
-    if message.from_user and db.is_admin(message.from_user.id):
-        await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
-    else:
-        await message.answer("❌ Bekor qilindi.", reply_markup=main_menu_kb(False))
+    await message.answer(
+        "❌ Amal bekor qilindi.",
+        reply_markup=main_menu_kb(bool(message.from_user and db.is_admin(message.from_user.id))),
+    )
 
 
 @router.message(StateFilter(None), F.text)
@@ -3994,6 +5976,22 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_SERIAL_DONE.lower(),
         BTN_SEARCH_NAME.lower(),
         BTN_FAVORITES.lower(),
+        BTN_TRENDING.lower(),
+        BTN_TOP_VIEWED.lower(),
+        BTN_NOTIFICATIONS.lower(),
+        BTN_PRO_BUY.lower(),
+        BTN_PRO_STATUS.lower(),
+        BTN_CREATE_AD.lower(),
+        BTN_MY_ADS.lower(),
+        BTN_PRO_MANAGE.lower(),
+        BTN_PRO_PRICE.lower(),
+        BTN_PRO_DURATION.lower(),
+        BTN_PRO_REQUESTS.lower(),
+        BTN_ADS.lower(),
+        BTN_AD_CHANNELS.lower(),
+        BTN_YES.lower(),
+        BTN_NO.lower(),
+        BTN_CONFIRM.lower(),
         "admin panel",
         "majburiy obuna",
         "kino qo'shish",
@@ -4013,6 +6011,22 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "bekor qilish",
         "nom bo'yicha qidirish",
         "sevimlilarim",
+        "trending",
+        "top ko'rilganlar",
+        "bildirishnomalar",
+        "pro olish",
+        "pro holatim",
+        "e'lon berish",
+        "e'lonlarim",
+        "pro boshqarish",
+        "pro narxi",
+        "pro muddati",
+        "pro so'rovlar",
+        "e'lonlar",
+        "e'lon kanalari",
+        "ha",
+        "yo'q",
+        "tasdiqlash",
     }
     if text.lower() in protected_words:
         return

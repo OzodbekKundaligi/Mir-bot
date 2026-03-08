@@ -1835,6 +1835,41 @@ BTN_CONFIRM = "✅ Tasdiqlash"
 BTN_SKIP = "/skip"
 BOT_SIGNATURE = "@MirTopKinoBot"
 
+LEGACY_MENU_TEXTS = {
+    "🛠 admin panel",
+    "⬅️ ortga",
+    "🔎 nom bo'yicha qidirish",
+    "⭐ sevimlilarim",
+    "🔥 trend",
+    "🔥 trending",
+    "trending",
+    "trend",
+    "🏆 top ko'rilganlar",
+    "🔔 bildirishnomalar",
+    "👑 pro olish",
+    "💎 pro holatim",
+    "📢 e'lon berish",
+    "🗂 e'lonlarim",
+    "📢 majburiy obuna",
+    "➕ kino qo'shish",
+    "📺 serial qo'shish",
+    "🗑 kino o'chirish",
+    "✏️ kontent tahrirlash",
+    "📚 kino va serial ro'yxati",
+    "📊 statistika",
+    "📥 so'rovlar",
+    "📣 habar yuborish",
+    "📣 xabar yuborish",
+    "👤 admin qo'shish",
+    "🎲 random kod",
+    "👑 pro boshqarish",
+    "💰 pro narxi",
+    "⏳ pro muddati",
+    "💳 pro so'rovlar",
+    "📰 e'lonlar",
+    "📡 e'lon kanalari",
+}
+
 
 def generate_missing_numeric_codes(existing_codes: Iterable[str], count: int) -> list[str]:
     if count <= 0:
@@ -2666,6 +2701,13 @@ async def send_stored_media(
     if viewer_id is None and message.from_user and not message.from_user.is_bot:
         viewer_id = message.from_user.id
     protect_content = content_should_be_protected(viewer_id)
+    logging.info(
+        "send_stored_media viewer_id=%s admin=%s protect_content=%s media_type=%s",
+        viewer_id,
+        db.is_admin(viewer_id) if isinstance(viewer_id, int) else False,
+        protect_content,
+        media_type,
+    )
     if media_type == "video":
         await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "document":
@@ -2812,6 +2854,13 @@ async def send_media_to_chat(
     final_caption = append_signature(caption)
     chat_id: int | str = int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref
     protect_content = content_should_be_protected(chat_id if isinstance(chat_id, int) and chat_id > 0 else None)
+    logging.info(
+        "send_media_to_chat chat_id=%s admin=%s protect_content=%s media_type=%s",
+        chat_id,
+        db.is_admin(chat_id) if isinstance(chat_id, int) else False,
+        protect_content,
+        media_type,
+    )
 
     if media_type == "video":
         await bot.send_video(
@@ -3307,6 +3356,22 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         + ("\n🛠 Admin panel ham ochiq." if admin else "")
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
+
+
+@router.message(F.text.in_({"/me", "/whoami", "/chat_id"}))
+async def whoami(message: Message) -> None:
+    if not message.from_user:
+        return
+    user_id = message.from_user.id
+    is_admin_user = db.is_admin(user_id)
+    protect_content = content_should_be_protected(user_id)
+    await message.answer(
+        "🆔 ID: {user_id}\n👤 Admin: {is_admin_user}\n🔒 Protect: {protect_content}".format(
+            user_id=user_id,
+            is_admin_user=is_admin_user,
+            protect_content=protect_content,
+        )
+    )
 
 
 @router.callback_query(F.data == "check_sub")
@@ -6057,7 +6122,7 @@ async def cancel_any(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(StateFilter(None), F.text)
+@router.message(StateFilter(None), F.text.func(lambda value: bool(value and value.strip().lower() in LEGACY_MENU_TEXTS)))
 async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return

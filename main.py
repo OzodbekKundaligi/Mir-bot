@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import os
 import random
@@ -34,6 +35,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bson import ObjectId
@@ -247,6 +249,49 @@ class Database:
             {
                 "$set": {
                     "content_mode": normalize_content_mode(mode),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
+    def get_site_notice(self) -> dict[str, Any]:
+        doc = self.settings.find_one({"_id": "config"}, {"site_notice": 1}) or {}
+        notice = doc.get("site_notice") or {}
+        if not isinstance(notice, dict):
+            return {}
+        text = str(notice.get("text") or "").strip()
+        if not text:
+            return {}
+        return {
+            "text": text,
+            "link": str(notice.get("link") or "").strip(),
+            "updated_at": str(notice.get("updated_at") or ""),
+            "created_by": notice.get("created_by"),
+        }
+
+    def set_site_notice(self, text: str, *, admin_id: int | None = None, link: str = "") -> None:
+        cleaned_text = text.strip()[:500]
+        if not cleaned_text:
+            self.settings.update_one(
+                {"_id": "config"},
+                {
+                    "$unset": {"site_notice": ""},
+                    "$set": {"updated_at": utc_now_iso()},
+                },
+                upsert=True,
+            )
+            return
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "site_notice": {
+                        "text": cleaned_text,
+                        "link": link.strip()[:300],
+                        "updated_at": utc_now_iso(),
+                        "created_by": admin_id,
+                    },
                     "updated_at": utc_now_iso(),
                 }
             },
@@ -1814,6 +1859,7 @@ def parse_admin_ids(value: str) -> list[int]:
 
 
 BTN_ADMIN_PANEL = "🛠 Panel"
+BTN_MINI_APP = "Ilova"
 BTN_SUBS = "📢 Obuna"
 BTN_ADD_MOVIE = "➕ Kino"
 BTN_ADD_SERIAL = "📺 Serial"
@@ -1851,6 +1897,7 @@ BOT_SIGNATURE = "@MirTopKinoBot"
 
 LEGACY_MENU_TEXTS = {
     "🛠 admin panel",
+    "ilova",
     "⬅️ ortga",
     "🔎 nom bo'yicha qidirish",
     "⭐ sevimlilarim",
@@ -1899,6 +1946,24 @@ def normalize_content_mode(value: Any) -> str:
 def content_mode_label(mode: str) -> str:
     normalized = normalize_content_mode(mode)
     return "🌐 Ochiq" if normalized == CONTENT_MODE_PUBLIC else "🔒 Yopiq"
+
+
+def get_public_base_url() -> str:
+    for env_name in ("PUBLIC_URL", "RENDER_EXTERNAL_URL", "RAILWAY_PUBLIC_DOMAIN"):
+        value = os.getenv(env_name, "").strip()
+        if not value:
+            continue
+        if value.startswith(("http://", "https://")):
+            return value.rstrip("/")
+        return f"https://{value}".rstrip("/")
+    return ""
+
+
+def get_mini_app_url() -> str:
+    public_base_url = get_public_base_url()
+    if not public_base_url:
+        return ""
+    return f"{public_base_url}/app/"
 
 
 def build_content_mode_text() -> str:
@@ -2004,12 +2069,16 @@ def is_confirm_text(value: str | None) -> bool:
 
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
-    buttons = [
+    buttons: list[list[KeyboardButton]] = []
+    mini_app_url = get_mini_app_url()
+    if mini_app_url:
+        buttons.append([KeyboardButton(text=BTN_MINI_APP, web_app=WebAppInfo(url=mini_app_url))])
+    buttons.extend([
         [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
         [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_NOTIFICATIONS)],
         [KeyboardButton(text=BTN_PRO_BUY), KeyboardButton(text=BTN_PRO_STATUS)],
         [KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)],
-    ]
+    ])
     if is_admin:
         buttons.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -2744,6 +2813,25 @@ def parse_message_media(message: Message) -> tuple[str, str] | None:
     return None
 
 
+def extract_message_notice_text(message: Message) -> str:
+    text = str(message.text or message.caption or "").strip()
+    if text:
+        return text[:500]
+    if message.content_type == ContentType.PHOTO:
+        return "Yangi rasmli e'lon"
+    if message.content_type == ContentType.VIDEO:
+        return "Yangi videoli e'lon"
+    if message.content_type == ContentType.ANIMATION:
+        return "Yangi gif e'lon"
+    if message.content_type == ContentType.DOCUMENT:
+        return "Yangi hujjat e'lon"
+    if message.content_type == ContentType.AUDIO:
+        return "Yangi audio e'lon"
+    if message.content_type == ContentType.VOICE:
+        return "Yangi voice e'lon"
+    return "Yangi admin xabari"
+
+
 async def send_stored_media(
     message: Message,
     media_type: str,
@@ -3406,9 +3494,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             return
 
     admin = db.is_admin(message.from_user.id)
+    mini_app_hint = "\n▣ Ilova tugmasi orqali katalogni oching." if get_mini_app_url() else ""
     text = (
         "🎬 Kino bot\n"
         "🔢 Kod yuboring yoki menyudan tanlang."
+        f"{mini_app_hint}"
         + ("\n🛠 Admin panel ham ochiq." if admin else "")
     )
     await message.answer(text, reply_markup=main_menu_kb(admin))
@@ -3430,6 +3520,57 @@ async def whoami(message: Message) -> None:
             protect_content=protect_content,
         )
     )
+
+
+@router.message(F.web_app_data)
+async def handle_web_app_data(message: Message, state: FSMContext) -> None:
+    if not message.from_user or not message.web_app_data:
+        return
+    raw = str(message.web_app_data.data or "").strip()
+    if not raw:
+        return
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        await message.answer("Ilova ma'lumoti o'qilmadi.")
+        return
+
+    action = str(payload.get("action") or "").strip()
+    if action == "open_content":
+        content_type = str(payload.get("content_type") or "").strip()
+        content_ref = str(payload.get("content_ref") or "").strip()
+        if content_type not in {"movie", "serial"} or not content_ref:
+            await message.answer("Kontent topilmadi.")
+            return
+        ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+        if not ok:
+            await ask_for_subscription(message, channels)
+            return
+        if content_type == "movie":
+            try:
+                sent = await send_movie_by_id(message, content_ref, message.from_user.id)
+            except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                sent = False
+            if not sent:
+                await message.answer("Kino topilmadi.")
+            return
+        try:
+            sent = await send_serial_selector_by_id(message, content_ref, message.from_user.id)
+        except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+            sent = False
+        if not sent:
+            await message.answer("Serial topilmadi.")
+        return
+
+    if action == "open_pro":
+        await pro_buy(message)
+        return
+
+    if action == "open_notifications":
+        await notification_settings(message)
+        return
+
+    await message.answer("Ilova bu amalni yubordi, lekin bot uni tanimadi.")
 
 
 @router.callback_query(F.data == "check_sub")
@@ -5476,6 +5617,7 @@ async def broadcast_collect_message(message: Message, state: FSMContext) -> None
         broadcast_source_message_id=message.message_id,
         broadcast_button_text="",
         broadcast_button_url="",
+        broadcast_notice_text=extract_message_notice_text(message),
     )
     await state.set_state(BroadcastState.waiting_button_choice)
     await message.answer("Inline tugma kerakmi?", reply_markup=build_inline_choice_kb("bcbtn"))
@@ -5633,6 +5775,9 @@ async def broadcast_finish(message: Message, state: FSMContext) -> None:
                 failed += 1
         except (TelegramBadRequest, TelegramForbiddenError):
             failed += 1
+    notice_text = str(data.get("broadcast_notice_text") or "").strip()
+    if success > 0 and notice_text:
+        db.set_site_notice(notice_text, admin_id=message.from_user.id, link=get_mini_app_url())
     await state.clear()
     await message.answer(
         "✅ Yuborish yakunlandi.\n"
@@ -6218,6 +6363,12 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if text in {BTN_ADMIN_PANEL.lower(), "🛠 admin panel"}:
         await open_admin_panel(message, state)
         return
+    if text == BTN_MINI_APP.lower():
+        if get_mini_app_url():
+            await message.answer("Ilovani menyudagi maxsus tugma orqali oching.")
+        else:
+            await message.answer("Ilova havolasi hali sozlanmagan.")
+        return
     if text in {BTN_BACK.lower(), "⬅️ ortga"}:
         await back_to_main(message, state)
         return
@@ -6318,6 +6469,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
 
     protected_words = {
         BTN_ADMIN_PANEL.lower(),
+        BTN_MINI_APP.lower(),
         BTN_SUBS.lower(),
         BTN_ADD_MOVIE.lower(),
         BTN_ADD_SERIAL.lower(),

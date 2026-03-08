@@ -201,6 +201,10 @@ class Database:
         except DuplicateKeyError:
             return False
 
+    def remove_admin(self, tg_id: int) -> bool:
+        result = self.admins.delete_one({"tg_id": tg_id})
+        return bool(result.deleted_count)
+
     def list_admin_ids(self) -> list[int]:
         result: list[int] = []
         for doc in self.admins.find({}, {"tg_id": 1}):
@@ -343,6 +347,31 @@ class Database:
             },
         )
         return self._doc_without_object_id(doc)
+
+    def search_users(self, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+        text = query.strip()
+        mongo_query: dict[str, Any] = {}
+        if text:
+            or_filters: list[dict[str, Any]] = [{"full_name": {"$regex": re.escape(text), "$options": "i"}}]
+            if text.isdigit():
+                or_filters.insert(0, {"tg_id": int(text)})
+            mongo_query = {"$or": or_filters}
+
+        rows = self.users.find(
+            mongo_query,
+            {
+                "tg_id": 1,
+                "full_name": 1,
+                "joined_at": 1,
+                "is_pro": 1,
+                "pro_until": 1,
+                "pro_status": 1,
+                "pro_note": 1,
+                "pro_given_at": 1,
+                "pro_given_by": 1,
+            },
+        ).sort("joined_at", DESCENDING).limit(max(1, int(limit)))
+        return [self._doc_without_object_id(row) or {} for row in rows]
 
     def is_pro_active(self, tg_id: int) -> bool:
         if self.is_admin(tg_id):

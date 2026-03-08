@@ -228,6 +228,34 @@ async def run_ad_review_action(ad_id: str, action: str, admin_id: int, channel_i
         await bot.session.close()
 
 
+async def resolve_ad_channel_create(channel_input: str) -> dict[str, Any]:
+    channel_ref = bot_main.normalize_channel_ref_input(channel_input)
+    if not channel_ref:
+        raise ValueError("Channel username or ID is invalid")
+    title = channel_ref
+    bot = bot_main.Bot(token=bot_main.BOT_TOKEN)
+    try:
+        try:
+            chat = await bot.get_chat(channel_ref)
+            title = str(getattr(chat, "title", "") or getattr(chat, "username", "") or channel_ref)
+        except bot_main.TelegramBadRequest:
+            pass
+    finally:
+        await bot.session.close()
+    created = bot_main.db.add_ad_channel(channel_ref, title=title)
+    result = {
+        "created": created,
+        "channel": None,
+    }
+    if created:
+        channels = bot_main.db.list_ad_channels()
+        for row in channels:
+            if str(row.get("channel_ref") or "") == channel_ref:
+                result["channel"] = row
+                break
+    return result
+
+
 def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     content_type = str(item.get("content_type") or "").strip()
     content_ref = str(item.get("id") or item.get("content_ref") or "").strip()
@@ -331,6 +359,22 @@ def serialize_ad(ad: dict[str, Any], handler: BaseHTTPRequestHandler) -> dict[st
         "created_at": str(ad.get("created_at") or ""),
         "review_note": str(ad.get("review_note") or ""),
         "channel_ref": str(ad.get("channel_ref") or ""),
+    }
+
+
+def serialize_user_summary(row: dict[str, Any]) -> dict[str, Any]:
+    user_id = int(row.get("tg_id") or 0)
+    pro_info = bot_main.db.get_pro_status(user_id) if user_id else {}
+    return {
+        "id": user_id,
+        "full_name": str(row.get("full_name") or user_id or "User"),
+        "joined_at": str(row.get("joined_at") or ""),
+        "is_admin": bot_main.db.is_admin(user_id) if user_id else False,
+        "is_seed_admin": user_id in set(getattr(bot_main, "ADMIN_IDS", []) or []),
+        "is_pro": bool(pro_info.get("is_pro")),
+        "pro_status": str(pro_info.get("pro_status") or row.get("pro_status") or ""),
+        "pro_until": str(pro_info.get("pro_until") or row.get("pro_until") or ""),
+        "pro_note": str(row.get("pro_note") or ""),
     }
 
 
@@ -439,6 +483,7 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
                 }
                 for row in bot_main.db.list_ad_channels()
             ],
+            "recent_users": [serialize_user_summary(row) for row in bot_main.db.search_users("", limit=8)],
         }
 
     return payload
@@ -608,6 +653,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             ads = [serialize_ad(row, self) for row in bot_main.db.list_user_ads(int(user["id"]), limit=30)]
             self._write_json(200, {"ok": True, "items": ads})
+            return
+        if path == "/api/admin/users/search":
+            user = self._require_user()
+            if not user:
+                return
+            if not bot_main.db.is_admin(int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            q = str(query.get("q", [""])[0] or "").strip()
+            items = [serialize_user_summary(row) for row in bot_main.db.search_users(q, limit=20)]
+            self._write_json(200, {"ok": True, "items": items})
             return
         if path == "/api/telegram-file":
             file_id = str(query.get("file_id", [""])[0] or "")
@@ -795,6 +851,142 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._write_json(200, {"ok": True, "notice": bot_main.db.get_site_notice()})
                 return
             except ValueError as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
+
+        if path == "/api/admin/pro-settings":
+            user = self._require_user()
+            if not user:
+                return
+            if not bot_main.db.is_admin(int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                price_text = str(payload.get("priceText") or "").strip()
+                duration_days_raw = payload.get("durationDays")
+                if len(price_text) < 3:
+                    raise ValueError("PRO price text is too short")
+                try:
+                    duration_days = int(duration_days_raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Duration must be a number") from exc
+                if duration_days < 1 or duration_days > 3650:
+                    raise ValueError("Duration must be between 1 and 3650 days")
+                bot_main.db.set_pro_price_text(price_text)
+                bot_main.db.set_pro_duration_days(duration_days)
+                settings = bot_main.db.get_bot_settings()
+                self._write_json(
+                    200,
+                    {
+                        "ok": True,
+                        "settings": {
+                            "pro_price_text": settings["pro_price_text"],
+                            "pro_duration_days": settings["pro_duration_days"],
+                            "content_mode": settings["content_mode"],
+                            "content_mode_label": bot_main.content_mode_label(settings["content_mode"]),
+                        },
+                    },
+                )
+                return
+            except ValueError as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
+
+        if path == "/api/admin/ad-channels/create":
+            user = self._require_user()
+            if not user:
+                return
+            if not bot_main.db.is_admin(int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                channel_input = str(payload.get("channelRef") or "").strip()
+                result = asyncio.run(resolve_ad_channel_create(channel_input))
+                channel = result.get("channel") or {}
+                self._write_json(
+                    200,
+                    {
+                        "ok": True,
+                        "created": bool(result.get("created")),
+                        "channel": {
+                            "id": str(channel.get("id") or ""),
+                            "title": str(channel.get("title") or channel.get("channel_ref") or ""),
+                            "channel_ref": str(channel.get("channel_ref") or ""),
+                        } if channel else None,
+                    },
+                )
+                return
+            except ValueError as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
+
+        if path == "/api/admin/ad-channels/delete":
+            user = self._require_user()
+            if not user:
+                return
+            if not bot_main.db.is_admin(int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                channel_id = str(payload.get("channelId") or "").strip()
+                if not channel_id:
+                    raise ValueError("Channel ID is required")
+                removed = bot_main.db.remove_ad_channel(channel_id)
+                self._write_json(200, {"ok": True, "removed": removed})
+                return
+            except ValueError as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
+
+        if path == "/api/admin/users/pro":
+            user = self._require_user()
+            if not user:
+                return
+            admin_id = int(user["id"])
+            if not bot_main.db.is_admin(admin_id):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                target_user_id = int(payload.get("userId") or 0)
+                enabled = bool(payload.get("enabled"))
+                if target_user_id <= 0:
+                    raise ValueError("User ID is invalid")
+                note = "Mini App admin"
+                bot_main.db.set_pro_state(target_user_id, enabled, admin_id=admin_id, note=note)
+                item = serialize_user_summary(bot_main.db.get_user(target_user_id) or {"tg_id": target_user_id})
+                self._write_json(200, {"ok": True, "item": item})
+                return
+            except (TypeError, ValueError) as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
+
+        if path == "/api/admin/users/admin":
+            user = self._require_user()
+            if not user:
+                return
+            admin_id = int(user["id"])
+            if not bot_main.db.is_admin(admin_id):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                target_user_id = int(payload.get("userId") or 0)
+                enabled = bool(payload.get("enabled"))
+                if target_user_id <= 0:
+                    raise ValueError("User ID is invalid")
+                if target_user_id == admin_id and not enabled:
+                    raise ValueError("You cannot remove your own admin access")
+                if not enabled and target_user_id in set(getattr(bot_main, "ADMIN_IDS", []) or []):
+                    raise ValueError("Seed admins are managed from environment")
+                changed = bot_main.db.add_admin(target_user_id) if enabled else bot_main.db.remove_admin(target_user_id)
+                item = serialize_user_summary(bot_main.db.get_user(target_user_id) or {"tg_id": target_user_id})
+                self._write_json(200, {"ok": True, "changed": changed, "item": item})
+                return
+            except (TypeError, ValueError) as exc:
                 self._write_json(400, {"ok": False, "detail": str(exc)})
                 return
 

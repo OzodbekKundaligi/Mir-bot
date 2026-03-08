@@ -23,6 +23,8 @@ const NAV = [
   { key: "profile", label: "Profile", icon: "user" },
 ];
 
+const PRIMARY_NAV_KEYS = ["home", "search", "saved", "pro"];
+
 const SEARCH_TYPES = [
   { key: "all", label: "All" },
   { key: "movie", label: "Movies" },
@@ -43,6 +45,7 @@ function icon(name) {
     close: html`<path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>`,
     link: html`<path d="M10 14 8 16a3 3 0 1 1-4.2-4.2l3-3A3 3 0 0 1 11 8m3 8 2-2a3 3 0 1 0-4.2-4.2l-1 1m-2 2h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
     grid: html`<path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>`,
+    menu: html`<path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>`,
   };
   return html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">${icons[name] || icons.grid}</svg>`;
 }
@@ -128,6 +131,7 @@ function App() {
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchType, setSearchType] = useState("all");
   const [searchResults, setSearchResults] = useState([]);
@@ -136,6 +140,11 @@ function App() {
   const [adForm, setAdForm] = useState({ title: "", description: "", buttonText: "", buttonUrl: "", photoUrl: "" });
   const [uploading, setUploading] = useState(false);
   const [noticeForm, setNoticeForm] = useState({ text: "", link: "" });
+  const [proForm, setProForm] = useState({ priceText: "", durationDays: "" });
+  const [channelInput, setChannelInput] = useState("");
+  const [adminUserQuery, setAdminUserQuery] = useState("");
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminUserLoading, setAdminUserLoading] = useState(false);
   const [adChannelMap, setAdChannelMap] = useState({});
 
   function notify(message) {
@@ -183,6 +192,23 @@ function App() {
       link: boot?.notice?.link || "",
     });
   }, [boot?.notice?.updated_at]);
+
+  useEffect(() => {
+    setProForm({
+      priceText: boot?.settings?.pro_price_text || "",
+      durationDays: String(boot?.settings?.pro_duration_days || ""),
+    });
+  }, [boot?.settings?.pro_price_text, boot?.settings?.pro_duration_days]);
+
+  useEffect(() => {
+    if (!adminUserQuery.trim()) {
+      setAdminUsers(boot?.admin?.recent_users || []);
+    }
+  }, [boot?.admin?.recent_users, adminUserQuery]);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [tab]);
 
   useEffect(() => {
     const firstChannelId = boot?.admin?.ad_channels?.[0]?.id || "";
@@ -373,7 +399,109 @@ function App() {
     }
   }
 
+  async function saveProSettings() {
+    try {
+      setBusy(true);
+      await api("/api/admin/pro-settings", {
+        method: "POST",
+        body: {
+          priceText: proForm.priceText,
+          durationDays: Number(proForm.durationDays),
+        },
+      });
+      await loadBoot(true);
+      notify("PRO settings saved");
+    } catch (err) {
+      notify(err.message || "PRO settings failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createAdChannel() {
+    try {
+      setBusy(true);
+      const payload = await api("/api/admin/ad-channels/create", {
+        method: "POST",
+        body: { channelRef: channelInput },
+      });
+      setChannelInput("");
+      await loadBoot(true);
+      notify(payload.created ? "Channel added" : "Channel already exists");
+    } catch (err) {
+      notify(err.message || "Channel add failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteAdChannel(channelId) {
+    try {
+      setBusy(true);
+      await api("/api/admin/ad-channels/delete", {
+        method: "POST",
+        body: { channelId },
+      });
+      await loadBoot(true);
+      notify("Channel removed");
+    } catch (err) {
+      notify(err.message || "Channel delete failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function searchAdminUsers() {
+    try {
+      setAdminUserLoading(true);
+      const payload = await api(`/api/admin/users/search?q=${encodeURIComponent(adminUserQuery.trim())}`);
+      setAdminUsers(payload.items || []);
+      notify(`${payload.items?.length || 0} users`);
+    } catch (err) {
+      notify(err.message || "User search failed");
+    } finally {
+      setAdminUserLoading(false);
+    }
+  }
+
+  async function setUserPro(userId, enabled) {
+    try {
+      setBusy(true);
+      const payload = await api("/api/admin/users/pro", {
+        method: "POST",
+        body: { userId, enabled },
+      });
+      setAdminUsers((current) => current.map((item) => item.id === userId ? payload.item : item));
+      await loadBoot(true);
+      notify(enabled ? "PRO enabled" : "PRO disabled");
+    } catch (err) {
+      notify(err.message || "PRO update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setUserAdmin(userId, enabled) {
+    try {
+      setBusy(true);
+      const payload = await api("/api/admin/users/admin", {
+        method: "POST",
+        body: { userId, enabled },
+      });
+      setAdminUsers((current) => current.map((item) => item.id === userId ? payload.item : item));
+      await loadBoot(true);
+      notify(enabled ? "Admin enabled" : "Admin removed");
+    } catch (err) {
+      notify(err.message || "Admin update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const navItems = useMemo(() => boot?.user?.is_admin ? [...NAV, { key: "admin", label: "Admin", icon: "shield" }] : NAV, [boot]);
+  const primaryNavItems = useMemo(() => navItems.filter((item) => PRIMARY_NAV_KEYS.includes(item.key)), [navItems]);
+  const secondaryNavItems = useMemo(() => navItems.filter((item) => !PRIMARY_NAV_KEYS.includes(item.key)), [navItems]);
+  const secondaryActive = secondaryNavItems.some((item) => item.key === tab);
 
   if (loading) {
     return html`<div className="loader-wrap"><div className="loader-card"><div className="spinner"></div><div className="eyebrow">Mini App</div><h2 className="headline" style=${{ fontSize: "30px", margin: "8px 0 10px" }}>Loading catalog</h2><p className="subheadline">Data is syncing from Telegram bot storage.</p></div></div>`;
@@ -522,6 +650,16 @@ function App() {
           <div className="hero"><div className="panel hero-side"><div className="metric-grid"><div className="metric-card"><div className="metric-label">Users</div><div className="metric-value">${admin.total_users || 0}</div></div><div className="metric-card"><div className="metric-label">PRO users</div><div className="metric-value">${admin.total_pro_users || 0}</div></div><div className="metric-card"><div className="metric-label">Movies</div><div className="metric-value">${admin.total_movies || 0}</div></div><div className="metric-card"><div className="metric-label">Serials</div><div className="metric-value">${admin.total_serials || 0}</div></div></div></div><div className="panel hero-main"><div className="eyebrow">Media mode</div><h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.settings.content_mode_label}</h2><p className="subheadline">This toggle affects every user and every admin.</p><div className="hero-actions"><button className="button secondary" onClick=${() => setContentMode("private")}>Private</button><button className="button secondary" onClick=${() => setContentMode("public")}>Public</button></div></div></div>
         </section>
         <section className="section">
+          <${SectionTitle} iconName="user" title="Users" copy="Search users and manage PRO or admin access." />
+          <div className="panel search-box">
+            <div className="form-grid">
+              <div className="field"><label>User search</label><input className="input" value=${adminUserQuery} onInput=${(event) => setAdminUserQuery(event.target.value)} placeholder="Telegram ID or full name" /></div>
+              <div className="hero-actions"><button className="button" onClick=${searchAdminUsers} disabled=${adminUserLoading}>${adminUserLoading ? "Searching..." : "Search users"}</button><button className="button ghost" onClick=${() => { setAdminUserQuery(""); setAdminUsers(admin.recent_users || []); }} disabled=${adminUserLoading}>Recent</button></div>
+            </div>
+          </div>
+          ${(adminUsers || []).length ? html`<div className="list" style=${{ marginTop: "14px" }}>${(adminUsers || []).map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.full_name || `User ${item.id}`}</div><div className="muted">ID ${item.id} · Joined ${dateText(item.joined_at)}</div></div><div className="chips"><span className="tag">${item.is_pro ? "PRO" : "Free"}</span><span className="tag">${item.is_admin ? "Admin" : "User"}</span></div></div><div className="muted" style=${{ marginTop: "10px" }}>PRO until: ${item.pro_until || "—"}</div>${item.is_seed_admin ? html`<div className="muted" style=${{ marginTop: "6px" }}>Seed admin: managed from env</div>` : null}<div className="hero-actions"><button className=${joinClass("button", item.is_pro ? "danger" : "success")} onClick=${() => setUserPro(item.id, !item.is_pro)} disabled=${busy}>${item.is_pro ? "Disable PRO" : "Enable PRO"}</button><button className=${joinClass("button", item.is_admin ? "danger" : "secondary")} onClick=${() => setUserAdmin(item.id, !item.is_admin)} disabled=${busy || (item.id === boot.user.id && item.is_admin) || item.is_seed_admin}>${item.is_admin ? "Remove admin" : "Make admin"}</button></div></div>`)}</div>` : html`<div style=${{ marginTop: "14px" }}><${Empty} title="No users found" copy="Search by Telegram ID or full name." /></div>`}
+        </section>
+        <section className="section">
           <${SectionTitle} iconName="grid" title="Site notice" copy="Mini App users will see this notice on refresh and live polling." />
           <div className="panel search-box">
             <div className="field"><label>Notice text</label><textarea className="textarea" value=${noticeForm.text} onInput=${(event) => setNoticeForm((current) => ({ ...current, text: event.target.value }))} placeholder="Short announcement for the Mini App"></textarea></div>
@@ -529,11 +667,39 @@ function App() {
             <div className="hero-actions"><button className="button" onClick=${() => saveNotice(false)} disabled=${busy}>Save notice</button><button className="button ghost" onClick=${() => saveNotice(true)} disabled=${busy}>Clear</button></div>
           </div>
         </section>
+        <section className="section">
+          <${SectionTitle} iconName="crown" title="PRO settings" copy="Single tariff used by bot and Mini App." />
+          <div className="panel search-box">
+            <div className="form-grid">
+              <div className="field"><label>Price text</label><input className="input" value=${proForm.priceText} onInput=${(event) => setProForm((current) => ({ ...current, priceText: event.target.value }))} placeholder="12000 so'm" /></div>
+              <div className="field"><label>Duration days</label><input className="input" type="number" min="1" max="3650" value=${proForm.durationDays} onInput=${(event) => setProForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="30" /></div>
+            </div>
+            <div className="hero-actions"><button className="button" onClick=${saveProSettings} disabled=${busy}>Save PRO</button></div>
+          </div>
+        </section>
+        <section className="section">
+          <${SectionTitle} iconName="megaphone" title="Ad channels" copy="Channels used when pending ads are approved." />
+          <div className="hero">
+            <div className="panel search-box">
+              <div className="field"><label>Channel</label><input className="input" value=${channelInput} onInput=${(event) => setChannelInput(event.target.value)} placeholder="@channel or -100..." /></div>
+              <div className="hero-actions"><button className="button" onClick=${createAdChannel} disabled=${busy || !channelInput.trim()}>Add channel</button></div>
+            </div>
+            <div className="panel hero-side">
+              ${(admin.ad_channels || []).length ? html`<div className="list">${(admin.ad_channels || []).map((channel) => html`<div className="list-card" key=${channel.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${channel.title}</div><div className="muted">${channel.channel_ref}</div></div><button className="button danger" onClick=${() => deleteAdChannel(channel.id)} disabled=${busy}>Remove</button></div></div>`)}</div>` : html`<${Empty} title="No ad channels" copy="Add a target channel for ad approvals." />`}
+            </div>
+          </div>
+        </section>
         <section className="section"><${SectionTitle} iconName="stats" title="Pending payments" copy="Latest PRO requests waiting for review" />${admin.pending_payments?.length ? html`<div className="list">${admin.pending_payments.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>User ${item.user_tg_id}</div><div className="muted">${item.payment_code || "No code"} · ${dateText(item.created_at)}</div></div><div className="tag">${item.status}</div></div>${item.comment ? html`<p className="muted">${item.comment}</p>` : null}<div className="hero-actions"><button className="button success" onClick=${() => reviewPayment(item.id, "approve")} disabled=${busy}>Approve</button><button className="button danger" onClick=${() => reviewPayment(item.id, "reject")} disabled=${busy}>Reject</button></div></div>`)}</div>` : html`<${Empty} title="No pending payments" copy="All PRO requests are processed." />`}</section>
         <section className="section"><${SectionTitle} iconName="megaphone" title="Pending ads" copy="Ads waiting for moderator action" />${admin.pending_ads?.length ? html`<div className="list">${admin.pending_ads.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.title}</div><div className="muted">User ${item.user_tg_id} · ${dateText(item.created_at)}</div></div><div className="tag">${item.status}</div></div><p className="muted">${item.description}</p><div className="field"><label>Channel</label><select className="input" value=${adChannelMap[item.id] || ""} onChange=${(event) => setAdChannelMap((current) => ({ ...current, [item.id]: event.target.value }))}>${(admin.ad_channels || []).map((channel) => html`<option value=${channel.id} key=${channel.id}>${channel.title}</option>`)}</select></div><div className="hero-actions"><button className="button success" onClick=${() => reviewAd(item.id, "approve")} disabled=${busy || !(admin.ad_channels || []).length}>Approve</button><button className="button danger" onClick=${() => reviewAd(item.id, "reject")} disabled=${busy}>Reject</button></div></div>`)}</div>` : html`<${Empty} title="No pending ads" copy="Ad moderation queue is empty." />`}</section>
       ` : null}
 
-      <nav className="bottom-nav"><div className="bottom-nav-inner">${navItems.map((item) => html`<button className=${joinClass("nav-item", tab === item.key && "active")} key=${item.key} onClick=${() => setTab(item.key)}>${icon(item.icon)}<span className="nav-label">${item.label}</span></button>`)}</div></nav>
+      <nav className="bottom-nav">
+        <div className="bottom-nav-inner">
+          ${primaryNavItems.map((item) => html`<button className=${joinClass("nav-item", tab === item.key && "active")} key=${item.key} onClick=${() => setTab(item.key)}>${icon(item.icon)}<span className="nav-label">${item.label}</span></button>`)}
+          <button className=${joinClass("nav-item", (menuOpen || secondaryActive) && "active")} onClick=${() => setMenuOpen((current) => !current)}>${icon("menu")}<span className="nav-label">More</span></button>
+        </div>
+      </nav>
+      ${menuOpen ? html`<div className="menu-backdrop" onClick=${() => setMenuOpen(false)}><div className="menu-sheet" onClick=${(event) => event.stopPropagation()}><div className="menu-sheet-header"><div><div className="eyebrow">Quick access</div><h3 style=${{ margin: "8px 0 0", fontSize: "24px" }}>More</h3></div><button className="icon-button" onClick=${() => setMenuOpen(false)}>${icon("close")}</button></div><div className="menu-grid">${secondaryNavItems.map((item) => html`<button className=${joinClass("menu-card", tab === item.key && "active")} key=${item.key} onClick=${() => setTab(item.key)}><div className="menu-card-icon">${icon(item.icon)}</div><div className="menu-card-label">${item.label}</div></button>`)}</div></div></div>` : null}
       <${DetailSheet} item=${detail} onClose=${() => setDetail(null)} onFavorite=${favorite} onReact=${react} onBotOpen=${(item) => sendToBot(item.open_payload, notify)} />
     </div>
   `;

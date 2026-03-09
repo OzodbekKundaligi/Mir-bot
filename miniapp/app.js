@@ -230,7 +230,7 @@ function initialsFromName(value) {
 }
 
 function RailSection({ iconName, title, copy, items, onOpen, onFavorite, onReact, action }) {
-  return html`<section className="section"><${SectionSarlavha} iconName=${iconName} title=${title} copy=${copy} action=${action} />${items?.length ? html`<div className="rail-track">${items.map((item) => html`<div className="rail-item" key=${`${item.content_type}-${item.id}`}><${Card} item=${item} onOpen=${onOpen} onFavorite=${onFavorite} onReact=${onReact} /></div>`)}</div>` : html`<${Empty} title="Bo'sh" copy="Kontent shu yerda ko'rinadi." />`}</section>`;
+  return html`<section className="section"><${SectionSarlavha} iconName=${iconName} title=${title} copy=${copy} action=${action} />${items?.length ? html`<div className="rail-track">${items.map((item) => html`<div className="rail-item" key=${`${item.content_type}-${item.id}`}><${PosterCard} item=${item} onOpen=${onOpen} onFavorite=${onFavorite} onReact=${onReact} /></div>`)}</div>` : html`<${Empty} title="Bo'sh" copy="Kontent shu yerda ko'rinadi." />`}</section>`;
 }
 
 function SkeletonGrid({ count = 6 }) {
@@ -239,6 +239,10 @@ function SkeletonGrid({ count = 6 }) {
 
 function Card({ item, onOpen, onFavorite, onReact }) {
   return html`<article className="content-card" onClick=${() => onOpen(item)}><${Media} item=${item} /><div className="card-hover-play">${icon("play")}</div><div className="content-card-body"><div className="content-card-top"><div><h3 className="content-title">${item.title || "Nomsiz"}</h3><div className="content-meta"><span>${item.code || "—"}</span><span>${item.year || "—"}</span><span>${item.quality || "HD"}</span></div></div><div className="tag">${item.content_type === "serial" ? "Serial" : "Kino"}</div></div><div className="content-meta"><span>${compact(item.views)} ko'rish</span><span>${compact(item.likes)} yoqdi</span><span>${Number(item.rating || 0).toFixed(1)} reyting</span></div><div className="content-actions compact" onClick=${(event) => event.stopPropagation()}><button className=${joinClass("action-pill", item.is_favorite && "active")} onClick=${() => onFavorite(item)} aria-label=${item.is_favorite ? "Saqlangandan olish" : "Saqlash"}>${icon("bookmark")}</button><button className=${joinClass("action-pill", item.user_reaction === "like" && "active")} onClick=${() => onReact(item, "like")} aria-label="Yoqdi">${icon("thumbsUp")}<span>${compact(item.likes)}</span></button><button className=${joinClass("action-pill", item.user_reaction === "dislike" && "active")} onClick=${() => onReact(item, "dislike")} aria-label="Yoqmadi">${icon("thumbsDown")}<span>${compact(item.dislikes)}</span></button><button className="action-pill primary" onClick=${() => onOpen(item)} aria-label="Ochish">${icon("play")}</button></div></div></article>`;
+}
+
+function PosterCard({ item, onOpen, onFavorite, onReact }) {
+  return html`<article className="poster-card" onClick=${() => onOpen(item)}><${Media} item=${item} /><div className="poster-overlay"></div><div className="poster-body"><div className="poster-top"><h3 className="poster-title">${item.title || "Nomsiz"}</h3><span className="poster-year">${item.year || "—"}</span></div><div className="poster-meta"><span>${compact(item.views)} ko'rish</span><span>★ ${Number(item.rating || 0).toFixed(1)}</span></div><div className="poster-actions" onClick=${(event) => event.stopPropagation()}><button className=${joinClass("mini-action", item.is_favorite && "active")} onClick=${() => onFavorite(item)} aria-label="Saqlash">${icon("bookmark")}</button><button className=${joinClass("mini-action", item.user_reaction === "like" && "active")} onClick=${() => onReact(item, "like")} aria-label="Yoqdi">${icon("thumbsUp")}</button><button className="mini-action active" onClick=${() => onOpen(item)} aria-label="Ochish">${icon("play")}</button></div></div></article>`;
 }
 
  function DetailSheet({ item, onClose, onFavorite, onReact, onBotOpen, onShare }) {
@@ -699,32 +703,33 @@ function App() {
     .slice(0, 8);
   const currentFeatured = featuredItems[featuredIndex % Math.max(featuredItems.length, 1)] || latestItems[0] || null;
   const latestNewsPreview = newsItems.slice(0, 3);
-  const homeStats = [
-    { label: "Kinolar", value: sections.recent_movies?.length || 0 },
-    { label: "Seriallar", value: sections.recent_serials?.length || 0 },
-    { label: "Saqlangan", value: sections.favorites?.length || 0 },
-    { label: "Top", value: sections.top_viewed?.length || 0 },
+  const featuredMeta = [
+    currentFeatured?.year || "—",
+    currentFeatured?.quality || "HD",
+    `${compact(currentFeatured?.views)} ko'rish`,
+    `★ ${Number(currentFeatured?.rating || 0).toFixed(1)}`,
   ];
+  const shellClass = joinClass("app-shell", tab === "admin" && boot.user.is_admin && "app-shell-admin");
 
   return html`
-      <div className="app-shell">
+      <div className=${shellClass}>
         ${toast ? html`<div className="toast">${toast}</div>` : null}
        ${boot.notice?.text ? html`<section className="notice-bar"><div className="notice-copy"><div className="eyebrow">Yangilik</div><strong>${boot.notice.text}</strong><span className="muted">${dateText(boot.notice.updated_at)}</span></div><div className="notice-actions">${boot.notice.link ? html`<button className="button secondary" onClick=${() => openUrl(boot.notice.link)}>Batafsil</button>` : null}<button className="button ghost" onClick=${() => setTab("news")}>Yangiliklar</button></div></section>` : null}
        <header className="topbar">
          <div className="brand brand-row">
+           <button className="icon-button topbar-icon menu-trigger" onClick=${() => setMenuOpen(true)} aria-label="Menyu">
+             ${icon("menu")}
+           </button>
            <div className="logo-mark"></div>
            <div className="brand-meta">
-             <div className="eyebrow">Platforma</div>
+             <div className="eyebrow">Telegram platforma</div>
              <h1 className="headline accent-headline">Mir Top Kino</h1>
-             <p className="subheadline">Kino katalogi, PRO boshqaruvi va admin nazorati uchun premium Mini App interfeysi.</p>
+             <p className="subheadline">Premium kino va serial katalogi.</p>
            </div>
          </div>
          <div className="header-actions">
-           <button className="icon-button topbar-icon" onClick=${() => setTab("search")} aria-label="Qidiruv">
-             ${icon("search")}
-           </button>
            <div className="header-badges">
-             ${boot.user.is_pro ? html`<span className="pill badge-pill pro">${icon("crown")}PRO</span>` : null}
+             ${boot.user.is_pro ? html`<span className="pill badge-pill pro">${icon("crown")}PRO faol</span>` : null}
              ${boot.user.is_admin ? html`<span className="pill badge-pill admin">${icon("shield")}ADMIN</span>` : null}
            </div>
            <button className="avatar-button" onClick=${() => setTab("profile")} aria-label="Profil">
@@ -733,39 +738,32 @@ function App() {
          </div>
       </header>
 
-      ${tab === "home" ? html`
-        <section className="hero hero-premium">
-          <div className="panel hero-main premium-hero featured-stage" style=${currentFeatured?.preview_url ? { backgroundImage: `linear-gradient(180deg, rgba(5, 9, 18, 0.16), rgba(5, 9, 18, 0.92)), url(${currentFeatured.preview_url})` } : {}}>
-            <div className="featured-stage-inner">
-            <div className="eyebrow">Tanlangan kontent</div>
-            <div className="hero-badge-row">
-              <span className="hero-badge">${currentFeatured ? (currentFeatured.content_type === "serial" ? "Serial" : "Kino") : "Tanlangan"}</span>
-              <span className="hero-badge">${currentFeatured?.code || "Kod tayinlanmagan"}</span>
-              <span className="hero-badge">${currentFeatured?.quality || "HD"}</span>
-            </div>
-             <h2 className="featured-title">${currentFeatured?.title || "Kontent tayyorlanmoqda"}</h2>
-             <p className="featured-copy">${currentFeatured?.description || "Yangi qo'shilgan kontent va eng ko'p ochilgan kartalar shu yerda chiqadi."}</p>
-             <div className="hero-actions">
-               <button className="button" onClick=${() => currentFeatured ? openDetail(currentFeatured) : setTab("search")} disabled=${busy}>Ko'rish</button>
-               <button className="button secondary" onClick=${() => currentFeatured ? favorite(currentFeatured) : setTab("saved")} disabled=${busy}>${icon("bookmark")}${currentFeatured?.is_favorite ? "Saqlangan" : "Saqlash"}</button>
-               <button className="button ghost" onClick=${() => currentFeatured ? openInBot(currentFeatured, notify, boot?.links) : setTab("search")}>${icon("arrowRight")}Botda ochish</button>
+       ${tab === "home" ? html`
+         <section className="hero hero-premium hero-cinema">
+           <div className="panel hero-main premium-hero featured-stage" style=${currentFeatured?.preview_url ? { backgroundImage: `linear-gradient(180deg, rgba(5, 9, 18, 0.16), rgba(5, 9, 18, 0.92)), url(${currentFeatured.preview_url})` } : {}}>
+             <div className="featured-stage-inner">
+               <div className="featured-copy-stack">
+                 <div className="eyebrow">Tanlangan premyera</div>
+                 <div className="hero-badge-row">
+                   <span className="hero-badge">${currentFeatured ? (currentFeatured.content_type === "serial" ? "Serial" : "Kino") : "Tanlangan"}</span>
+                   <span className="hero-badge">${currentFeatured?.code || "Kod tayinlanmagan"}</span>
+                 </div>
+                 <p className="featured-lead">Telegram ichida eng yangi kino va seriallar.</p>
+                 <h2 className="featured-title">${currentFeatured?.title || "Kontent tayyorlanmoqda"}</h2>
+                 <div className="featured-inline-meta">
+                   ${featuredMeta.map((item) => html`<span key=${item}>${item}</span>`)}
+                 </div>
+                 <p className="featured-copy">${currentFeatured?.description || "Yangi qo'shilgan kontent va eng ko'p ochilgan kartalar shu yerda chiqadi."}</p>
+                 <div className="hero-actions">
+                   <button className="button hero-primary" onClick=${() => currentFeatured ? openDetail(currentFeatured) : setTab("search")} disabled=${busy}>${icon("play")}Davom etish</button>
+                   <button className="button secondary hero-secondary" onClick=${() => currentFeatured ? favorite(currentFeatured) : setTab("saved")} disabled=${busy}>${icon("bookmark")}${currentFeatured?.is_favorite ? "Saqlangan" : "Saqlash"}</button>
+                   <button className="icon-button hero-icon-button" onClick=${() => currentFeatured ? openInBot(currentFeatured, notify, boot?.links) : setTab("search")} aria-label="Botda ochish">${icon("arrowRight")}</button>
+                 </div>
+                 ${featuredItems.length > 1 ? html`<div className="hero-dots">${featuredItems.map((item, index) => html`<button className=${joinClass("hero-dot", index === (featuredIndex % Math.max(featuredItems.length, 1)) && "active")} key=${`${item.content_type}-${item.id}`} onClick=${() => setFeaturedIndex(index)} aria-label=${item.title}></button>`)}</div>` : null}
+               </div>
              </div>
-            <div className="hero-metrics">
-              ${homeStats.map((item) => html`<div className="mini-stat" key=${item.label}><span>${item.label}</span><strong>${item.value}</strong></div>`)}
-            </div>
-            </div>
-          </div>
-          <div className="hero-side hero-side-premium">
-            <div className="feature-panel feature-panel-strong">
-              <div className="eyebrow">Tasma</div>
-              <div className="feature-title">Tanlanganlar almashib turadi</div>
-              <p className="subheadline">Eng yaxshi kartalar shu blokda aylantirib ko'rsatiladi. Istalganini bir tegishda ochish mumkin.</p>
-            </div>
-            <div className="featured-rail">
-              ${featuredItems.map((item, index) => html`<button className=${joinClass("featured-rail-item", index === (featuredIndex % Math.max(featuredItems.length, 1)) && "active")} key=${item.id} onClick=${() => setFeaturedIndex(index)}><div className="featured-rail-media" style=${item.preview_url ? { backgroundImage: `linear-gradient(180deg, rgba(5, 9, 18, 0.12), rgba(5, 9, 18, 0.72)), url(${item.preview_url})` } : {}}></div><div className="featured-rail-copy"><strong>${item.title}</strong><span>${item.code || "Kod yo'q"} · ${item.year || "—"}</span></div></button>`)}
-            </div>
-          </div>
-        </section>
+           </div>
+         </section>
 
         <section className="section">
           <${SectionSarlavha}

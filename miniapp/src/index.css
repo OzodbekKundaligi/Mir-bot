@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b0f16;
+  --color-surface: #141a26;
+  --color-accent: #0a84ff;
+  --color-accent-purple: #5e5ce6;
+  --color-accent-pink: #ff375f;
+  --color-ios-blue: #0a84ff;
+  --color-ios-gray: #1c1c1e;
+  --color-vibrant: rgba(255, 255, 255, 0.02);
+
+  --font-sans: 'SF Pro Display', 'Sora', 'Manrope', system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-white antialiased selection:bg-accent/30 overflow-x-hidden font-sans;
+  }
+
+  /* iOS 26 Glass */
+  .mesh-bg {
+    background:
+      radial-gradient(1000px 600px at -10% -20%, rgba(10, 132, 255, 0.18), transparent 60%),
+      radial-gradient(900px 520px at 110% -10%, rgba(94, 92, 230, 0.16), transparent 60%),
+      radial-gradient(800px 480px at 50% 120%, rgba(255, 55, 95, 0.12), transparent 60%),
+      radial-gradient(600px 400px at 50% 20%, rgba(255, 255, 255, 0.04), transparent 60%);
+    background-color: var(--color-bg);
+  }
+
+  .glass-panel {
+    @apply bg-white/[0.04] backdrop-blur-[42px] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.35)];
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-xs font-semibold tracking-wide text-white shadow-[0_12px_30px_rgba(10,132,255,0.45)];
+  }
+
+  .btn-soft {
+    @apply inline-flex items-center gap-2 rounded-full bg-white/[0.06] px-3 py-2 text-xs text-white/85 border border-white/10;
+  }
+
+  .btn-soft-active {
+    @apply bg-accent/20 text-white border-accent/40;
+  }
+
+  .icon-pill {
+    @apply inline-flex items-center justify-center rounded-full bg-white/[0.06] border border-white/10 w-9 h-9;
+  }
+
+  .avatar-pill {
+    @apply inline-flex items-center justify-center rounded-full bg-white/10 border border-white/15 w-9 h-9 text-xs font-semibold;
+  }
+
+  .chip {
+    @apply rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-white/70;
+  }
+
+  .chip-active {
+    @apply border-accent/40 bg-accent/20 text-white;
+  }
+
+  .chip-approve {
+    @apply border-emerald-400/40 bg-emerald-400/20 text-emerald-50;
+  }
+
+  .chip-reject {
+    @apply border-rose-400/40 bg-rose-400/20 text-rose-50;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-accent/40;
+  }
+
+  .section-title {
+    @apply flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-white/70;
+  }
+
+  .dock-item {
+    @apply flex flex-col items-center gap-1 rounded-2xl px-3 py-2 text-[9px] uppercase tracking-[0.18em] text-white/50;
+  }
+
+  .dock-item-active {
+    @apply bg-white/[0.08] text-white;
+  }
+
+  .menu-card {
+    @apply flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3 text-xs text-white/80;
+  }
+
+  .menu-card-active {
+    @apply border-accent/40 bg-accent/15 text-white;
+  }
+
+  .toast-msg {
+    @apply fixed top-4 left-1/2 z-[120] -translate-x-1/2 rounded-full bg-black/60 px-4 py-2 text-xs text-white border border-white/10 backdrop-blur-md;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 2px;
+    height: 2px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-white/20;
+  }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 3s ease-in-out infinite;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* YouTube Style Aspect Ratio */
+.aspect-video-yt {
+  aspect-ratio: 16 / 9;
+}

@@ -20,6 +20,7 @@ HOST = os.getenv("WEB_HOST", "0.0.0.0").strip() or "0.0.0.0"
 PORT = int((os.getenv("PORT") or os.getenv("WEB_PORT") or "8000").strip())
 BASE_DIR = Path(__file__).resolve().parent
 MINIAPP_DIR = BASE_DIR / "miniapp"
+MINIAPP_DIST_DIR = MINIAPP_DIR / "dist"
 UPLOADS_DIR = BASE_DIR / "miniapp_uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
@@ -562,8 +563,9 @@ class AppHandler(BaseHTTPRequestHandler):
         return user
 
     def _serve_static(self, relative_path: str) -> None:
-        target = (MINIAPP_DIR / relative_path).resolve()
-        if MINIAPP_DIR not in target.parents and target != MINIAPP_DIR:
+        root_dir = MINIAPP_DIST_DIR if MINIAPP_DIST_DIR.exists() else MINIAPP_DIR
+        target = (root_dir / relative_path).resolve()
+        if root_dir not in target.parents and target != root_dir:
             self._write_json(404, {"ok": False, "detail": "Not found"})
             return
         if not target.exists() or not target.is_file():

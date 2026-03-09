@@ -19,7 +19,7 @@ const NAV = [
   { key: "search", label: "Qidiruv", icon: "search" },
   { key: "saved", label: "Saqlangan", icon: "bookmark" },
   { key: "pro", label: "PRO", icon: "crown" },
-  { key: "ads", label: "E'lon", icon: "megaphone" },
+  { key: "ads", label: "E'lonlar", icon: "megaphone" },
   { key: "profile", label: "Profil", icon: "user" },
 ];
 
@@ -32,7 +32,7 @@ const SEARCH_TYPES = [
 ];
 
 const ADMIN_BOT_ACTIONS = [
-  { action: "open_admin_panel", label: "Admin panel", icon: "shield" },
+  { action: "open_admin_panel", label: "Panel", icon: "shield" },
   { action: "admin_subs", label: "Obuna", icon: "grid" },
   { action: "admin_add_movie", label: "Kino qo'shish", icon: "play" },
   { action: "admin_add_serial", label: "Serial qo'shish", icon: "play" },
@@ -98,6 +98,24 @@ function dateText(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("uz-UZ", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function statusText(value) {
+  const lookup = {
+    pending: "Kutilmoqda",
+    approved: "Tasdiqlandi",
+    rejected: "Rad etildi",
+    posted: "Joylandi",
+    active: "Faol",
+    inactive: "Faol emas",
+    free: "Oddiy",
+  };
+  const key = String(value || "").trim().toLowerCase();
+  return lookup[key] || String(value || "—");
+}
+
+function yesNo(value) {
+  return value ? "Ha" : "Yo'q";
 }
 
 function copyText(value, notify) {
@@ -306,7 +324,7 @@ function App() {
       await loadBoot(true);
       await refreshDetail(item);
     } catch (err) {
-      notify(err.message || "Saqlash failed");
+      notify(err.message || "Saqlab bo'lmadi");
     } finally {
       setBusy(false);
     }
@@ -578,13 +596,13 @@ function App() {
       ${boot.notice?.text ? html`<section className="notice-bar"><div className="notice-copy"><div className="eyebrow">Admin xabari</div><strong>${boot.notice.text}</strong><span className="muted">${dateText(boot.notice.updated_at)}</span></div><div className="notice-actions">${boot.notice.link ? html`<button className="button secondary" onClick=${() => (tg?.openLink ? tg.openLink(boot.notice.link) : window.open(boot.notice.link, "_blank"))}>Ochish</button>` : null}</div></section>` : null}
       <header className="topbar">
         <div className="brand">
-          <div className="eyebrow">Telegram Mini App</div>
+          <div className="eyebrow">Telegram ilovasi</div>
           <h1 className="headline accent-headline">Mir Top Kino</h1>
-          <p className="subheadline">Qidiruv, kontent, PRO va admin boshqaruvini bitta professional interfeysga jamlagan kino ilova.</p>
+          <p className="subheadline">Kino katalogi, PRO boshqaruvi va admin nazoratini bitta zamonaviy interfeysga yig'gan Mini App.</p>
         </div>
         <div className="status-cluster">
           <div className="pill">${icon("user")}${boot.user.full_name || boot.user.username || boot.user.id}</div>
-          <div className="pill">${icon("crown")}${boot.user.is_pro ? "PRO active" : "Standard"}</div>
+          <div className="pill">${icon("crown")}${boot.user.is_pro ? "PRO faol" : "Standart"}</div>
           <div className="pill muted">${icon("shield")}${boot.settings.content_mode_label}</div>
         </div>
       </header>
@@ -592,14 +610,14 @@ function App() {
       ${tab === "home" ? html`
         <section className="hero hero-premium">
           <div className="panel hero-main premium-hero">
-            <div className="eyebrow">Boshqaruv markazi</div>
+            <div className="eyebrow">Asosiy boshqaruv</div>
             <div className="hero-badge-row">
               <span className="hero-badge">Jonli preview</span>
-              <span className="hero-badge">Tez qidiruv</span>
-              <span className="hero-badge">Admin nazorat</span>
+              <span className="hero-badge">Tez kirish</span>
+              <span className="hero-badge">Premium boshqaruv</span>
             </div>
-            <h2 style=${{ margin: "8px 0 10px", fontSize: "36px" }}>Telegram uchun premium kino katalog</h2>
-            <p className="subheadline">Kino va seriallarni ko'ring, botga bir urinishda o'ting, PRO holatini tekshiring va admin amallarini boshqaring.</p>
+            <h2 style=${{ margin: "8px 0 10px", fontSize: "36px" }}>Kino katalogi va boshqaruv paneli</h2>
+            <p className="subheadline">Yangi kinolarni ko'ring, botga bir tegishda o'ting, PRO holatini tekshiring va kerakli bo'limlarni tez oching.</p>
             <div className="hero-actions">
               <button className="button" onClick=${() => setTab("search")}>Katalogni qidirish</button>
               <button className="button secondary" onClick=${() => sendToBot({ action: "open_pro" }, notify, boot?.links)}>Botda davom etish</button>
@@ -617,7 +635,7 @@ function App() {
             <div className="metric-grid">
               <div className="metric-card accent"><div className="metric-label">Saqlangan</div><div className="metric-value">${sections.favorites?.length || 0}</div></div>
               <div className="metric-card accent"><div className="metric-label">Top kontent</div><div className="metric-value">${sections.top_viewed?.length || 0}</div></div>
-              <div className="metric-card"><div className="metric-label">Media mode</div><div className="metric-value">${boot.settings.content_mode_label}</div></div>
+              <div className="metric-card"><div className="metric-label">Media rejimi</div><div className="metric-value">${boot.settings.content_mode_label}</div></div>
               <div className="metric-card"><div className="metric-label">Kutilayotgan e'lon</div><div className="metric-value">${admin.pending_ads_count || 0}</div></div>
             </div>
           </div>
@@ -635,7 +653,7 @@ function App() {
 
         <section className="section">
           <${SectionSarlavha} iconName="stats" title="Top ko'rilganlar" copy="Bot ichida eng ko'p ochilgan kontent" />
-          ${sections.top_viewed?.length ? html`<div className="content-grid">${sections.top_viewed.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Statistika yo'q" copy="Ko'rishlar will appear after ta foydalanuvchi topildi start opening content." />`}
+          ${sections.top_viewed?.length ? html`<div className="content-grid">${sections.top_viewed.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Top kontent yo'q" copy="Foydalanuvchilar kontent ochgach bu yerda statistika ko'rinadi." />`}
         </section>
       ` : null}
 
@@ -649,14 +667,14 @@ function App() {
           </div>
         </section>
         <section className="section">
-          ${searchResults?.length ? html`<div className="content-grid">${searchResults.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="No ta natija topildi yet" copy="Kod yoki nom yozib qidirishni boshlang." />`}
+          ${searchResults?.length ? html`<div className="content-grid">${searchResults.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Natija topilmadi" copy="Kod yoki nom yozib qidirishni boshlang." />`}
         </section>
       ` : null}
 
       ${tab === "saved" ? html`
         <section className="section">
-          <${SectionSarlavha} iconName="bookmark" title="Saqlangan content" copy="Bot bilan sinxronlangan sevimlilar" />
-          ${sections.favorites?.length ? html`<div className="content-grid">${sections.favorites.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Saqlangan list is empty" copy="Use Saqlash on any card to keep it here." />`}
+          <${SectionSarlavha} iconName="bookmark" title="Saqlanganlar" copy="Bot bilan sinxronlangan sevimlilar" />
+          ${sections.favorites?.length ? html`<div className="content-grid">${sections.favorites.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Saqlanganlar bo'sh" copy="Istalgan kartadagi saqlash tugmasi orqali bu yerga qo'shing." />`}
         </section>
       ` : null}
 
@@ -666,7 +684,7 @@ function App() {
           <div className="hero">
             <div className="panel hero-main">
               <div className="eyebrow">Joriy holat</div>
-              <h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.user.is_pro ? "PRO active" : "PRO kerak"}</h2>
+              <h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.user.is_pro ? "PRO faol" : "PRO kerak"}</h2>
               <p className="subheadline">Narx: ${boot.settings.pro_price_text}<br />Muddat: ${boot.settings.pro_duration_days} kun<br />Qachongacha: ${boot.user.pro_until || "—"}</p>
               <div className="hero-actions">
                 <button className="button" onClick=${() => sendToBot({ action: "open_pro" }, notify, boot?.links)}>Botda davom etish</button>
@@ -687,7 +705,7 @@ function App() {
       ${tab === "ads" ? html`
         <section className="section">
           <${SectionSarlavha} iconName="grid" title="Mening e'lonlarim" copy="Oxirgi e'lonlar va ularning holati" />
-          ${boot.ads?.mine?.length ? html`<div className="list">${boot.ads.mine.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.title}</div><div className="muted">${item.status} Â· ${dateText(item.created_at)}</div></div><div className="tag">${item.status}</div></div><p className="muted" style=${{ marginBottom: 0 }}>${item.description}</p></div>`)}</div>` : html`<${Empty} title="E'lonlar yo'q" copy="Yuborgan e'lonlaringiz shu yerda chiqadi." />`}
+          ${boot.ads?.mine?.length ? html`<div className="list">${boot.ads.mine.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.title}</div><div className="muted">${statusText(item.status)} · ${dateText(item.created_at)}</div></div><div className="tag">${statusText(item.status)}</div></div><p className="muted" style=${{ marginBottom: 0 }}>${item.description}</p></div>`)}</div>` : html`<${Empty} title="E'lonlar yo'q" copy="Yuborgan e'lonlaringiz shu yerda chiqadi." />`}
         </section>
 
         <section className="section">
@@ -703,13 +721,13 @@ function App() {
             <div className="panel hero-main">
               <div className="eyebrow">Hisob</div>
               <h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.user.full_name || boot.user.username || boot.user.id}</h2>
-              <p className="subheadline">Telegram ID: ${boot.user.id}<br />PRO: ${boot.user.is_pro ? "active" : "inactive"}<br />Admin: ${boot.user.is_admin ? "yes" : "no"}</p>
+              <p className="subheadline">Telegram ID: ${boot.user.id}<br />PRO: ${boot.user.is_pro ? "Faol" : "Faol emas"}<br />Admin: ${yesNo(boot.user.is_admin)}</p>
               <div className="hero-actions"><button className="button secondary" onClick=${() => copyText(boot.user.id, notify)}>ID nusxa olish</button><button className="button ghost" onClick=${() => sendToBot({ action: "open_notifications" }, notify, boot?.links)}>Bot sozlamalari</button></div>
             </div>
             <div className="panel hero-side">
-              <div className="list-card"><div className="list-row"><span>Yangi kontent</span><button className=${joinClass("button", boot.notifications.new_content ? "success" : "ghost")} onClick=${() => toggleNotification("new_content")}>${boot.notifications.new_content ? "On" : "Off"}</button></div></div>
-              <div className="list-card"><div className="list-row"><span>PRO yangiliklari</span><button className=${joinClass("button", boot.notifications.pro_updates ? "success" : "ghost")} onClick=${() => toggleNotification("pro_updates")}>${boot.notifications.pro_updates ? "On" : "Off"}</button></div></div>
-              <div className="list-card"><div className="list-row"><span>E'lon xabarlari</span><button className=${joinClass("button", boot.notifications.ads_updates ? "success" : "ghost")} onClick=${() => toggleNotification("ads_updates")}>${boot.notifications.ads_updates ? "On" : "Off"}</button></div></div>
+              <div className="list-card"><div className="list-row"><span>Yangi kontent</span><button className=${joinClass("button", boot.notifications.new_content ? "success" : "ghost")} onClick=${() => toggleNotification("new_content")}>${boot.notifications.new_content ? "Yoqilgan" : "O'chiq"}</button></div></div>
+              <div className="list-card"><div className="list-row"><span>PRO yangiliklari</span><button className=${joinClass("button", boot.notifications.pro_updates ? "success" : "ghost")} onClick=${() => toggleNotification("pro_updates")}>${boot.notifications.pro_updates ? "Yoqilgan" : "O'chiq"}</button></div></div>
+              <div className="list-card"><div className="list-row"><span>E'lon xabarlari</span><button className=${joinClass("button", boot.notifications.ads_updates ? "success" : "ghost")} onClick=${() => toggleNotification("ads_updates")}>${boot.notifications.ads_updates ? "Yoqilgan" : "O'chiq"}</button></div></div>
             </div>
           </div>
         </section>
@@ -718,24 +736,24 @@ function App() {
       ${tab === "admin" && boot.user.is_admin ? html`
         <section className="section">
           <${SectionSarlavha} iconName="shield" title="Admin boshqaruvi" copy="Asosiy ko'rsatkichlar va global media rejimi" />
-          <div className="hero"><div className="panel hero-side"><div className="metric-grid"><div className="metric-card"><div className="metric-label">Foydalanuvchi</div><div className="metric-value">${admin.total_users || 0}</div></div><div className="metric-card"><div className="metric-label">PRO ta foydalanuvchi topildi</div><div className="metric-value">${admin.total_pro_users || 0}</div></div><div className="metric-card"><div className="metric-label">Kinolar</div><div className="metric-value">${admin.total_movies || 0}</div></div><div className="metric-card"><div className="metric-label">Seriallar</div><div className="metric-value">${admin.total_serials || 0}</div></div></div></div><div className="panel hero-main"><div className="eyebrow">Media mode</div><h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.settings.content_mode_label}</h2><p className="subheadline">Bu sozlama barcha user va adminlar uchun bir xil ishlaydi.</p><div className="hero-actions"><button className="button secondary" onClick=${() => setContentMode("private")}>Yopiq</button><button className="button secondary" onClick=${() => setContentMode("public")}>Ochiq</button></div></div></div>
+          <div className="hero"><div className="panel hero-side"><div className="metric-grid"><div className="metric-card"><div className="metric-label">Foydalanuvchilar</div><div className="metric-value">${admin.total_users || 0}</div></div><div className="metric-card"><div className="metric-label">PRO foydalanuvchilar</div><div className="metric-value">${admin.total_pro_users || 0}</div></div><div className="metric-card"><div className="metric-label">Kinolar</div><div className="metric-value">${admin.total_movies || 0}</div></div><div className="metric-card"><div className="metric-label">Seriallar</div><div className="metric-value">${admin.total_serials || 0}</div></div></div></div><div className="panel hero-main"><div className="eyebrow">Media rejimi</div><h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.settings.content_mode_label}</h2><p className="subheadline">Bu sozlama barcha foydalanuvchilar uchun bir xil ishlaydi.</p><div className="hero-actions"><button className="button secondary" onClick=${() => setContentMode("private")}>Yopiq</button><button className="button secondary" onClick=${() => setContentMode("public")}>Ochiq</button></div></div></div>
         </section>
         <section className="section">
-          <${SectionSarlavha} iconName="user" title="Foydalanuvchi" copy="Qidirish ta foydalanuvchi topildi and manage PRO or admin access." />
+          <${SectionSarlavha} iconName="user" title="Foydalanuvchilar" copy="ID yoki ism bo'yicha toping va huquqlarni boshqaring." />
           <div className="panel search-box">
             <div className="form-grid">
               <div className="field"><label>Qidiruv</label><input className="input" value=${adminUserSorov} onInput=${(event) => setAdminUserSorov(event.target.value)} placeholder="Telegram ID yoki ism" /></div>
-              <div className="hero-actions"><button className="button" onClick=${searchAdminFoydalanuvchi} disabled=${adminUserLoading}>${adminUserLoading ? "Qidirilmoqda..." : "Qidirish ta foydalanuvchi topildi"}</button><button className="button ghost" onClick=${() => { setAdminUserSorov(""); setAdminFoydalanuvchi(admin.recent_users || []); }} disabled=${adminUserLoading}>So'nggilari</button></div>
+              <div className="hero-actions"><button className="button" onClick=${searchAdminFoydalanuvchi} disabled=${adminUserLoading}>${adminUserLoading ? "Qidirilmoqda..." : "Qidirish"}</button><button className="button ghost" onClick=${() => { setAdminUserSorov(""); setAdminFoydalanuvchi(admin.recent_users || []); }} disabled=${adminUserLoading}>So'nggilari</button></div>
             </div>
           </div>
-          ${(adminFoydalanuvchi || []).length ? html`<div className="list" style=${{ marginTop: "14px" }}>${(adminFoydalanuvchi || []).map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.full_name || `User ${item.id}`}</div><div className="muted">ID ${item.id} Â· Qo'shilgan: ${dateText(item.joined_at)}</div></div><div className="chips"><span className="tag">${item.is_pro ? "PRO" : "Free"}</span><span className="tag">${item.is_admin ? "Admin" : "User"}</span></div></div><div className="muted" style=${{ marginTop: "10px" }}>PRO muddati: ${item.pro_until || "—"}</div>${item.is_seed_admin ? html`<div className="muted" style=${{ marginTop: "6px" }}>Asosiy admin: env orqali boshqariladi</div>` : null}<div className="hero-actions"><button className=${joinClass("button", item.is_pro ? "danger" : "success")} onClick=${() => setUserPro(item.id, !item.is_pro)} disabled=${busy}>${item.is_pro ? "PRO o'chirish" : "PRO yoqish"}</button><button className=${joinClass("button", item.is_admin ? "danger" : "secondary")} onClick=${() => setUserAdmin(item.id, !item.is_admin)} disabled=${busy || (item.id === boot.user.id && item.is_admin) || item.is_seed_admin}>${item.is_admin ? "Admin olish" : "Admin berish"}</button></div></div>`)}</div>` : html`<div style=${{ marginTop: "14px" }}><${Empty} title="No ta foydalanuvchi topildi found" copy="Qidirish by Telegram ID yoki ism." /></div>`}
+          ${(adminFoydalanuvchi || []).length ? html`<div className="list" style=${{ marginTop: "14px" }}>${(adminFoydalanuvchi || []).map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.full_name || `User ${item.id}`}</div><div className="muted">ID ${item.id} · Qo'shilgan: ${dateText(item.joined_at)}</div></div><div className="chips"><span className="tag">${item.is_pro ? "PRO" : "Oddiy"}</span><span className="tag">${item.is_admin ? "Admin" : "Foydalanuvchi"}</span></div></div><div className="muted" style=${{ marginTop: "10px" }}>PRO muddati: ${item.pro_until || "—"}</div>${item.is_seed_admin ? html`<div className="muted" style=${{ marginTop: "6px" }}>Asosiy admin: env orqali boshqariladi</div>` : null}<div className="hero-actions"><button className=${joinClass("button", item.is_pro ? "danger" : "success")} onClick=${() => setUserPro(item.id, !item.is_pro)} disabled=${busy}>${item.is_pro ? "PRO o'chirish" : "PRO yoqish"}</button><button className=${joinClass("button", item.is_admin ? "danger" : "secondary")} onClick=${() => setUserAdmin(item.id, !item.is_admin)} disabled=${busy || (item.id === boot.user.id && item.is_admin) || item.is_seed_admin}>${item.is_admin ? "Admin olish" : "Admin berish"}</button></div></div>`)}</div>` : html`<div style=${{ marginTop: "14px" }}><${Empty} title="Foydalanuvchi topilmadi" copy="Telegram ID yoki ism orqali qidiring." /></div>`}
         </section>
         <section className="section">
-          <${SectionSarlavha} iconName="grid" title="Sayt xabari" copy="Mini App ta foydalanuvchi topildi will see this notice on refresh and live polling." />
+          <${SectionSarlavha} iconName="grid" title="Sayt xabari" copy="Bu xabar ilova ichida barcha foydalanuvchilarga ko'rinadi." />
           <div className="panel search-box">
             <div className="field"><label>Xabar matni</label><textarea className="textarea" value=${noticeForm.text} onInput=${(event) => setNoticeForm((current) => ({ ...current, text: event.target.value }))} placeholder="Qisqa e'lon yoki bildirishnoma"></textarea></div>
-            <div className="field"><label>Havola</label><input className="input" value=${noticeForm.link} onInput=${(event) => setNoticeForm((current) => ({ ...current, link: event.target.value }))} placeholder="Ixtiyoriy https://... or /app/" /></div>
-            <div className="hero-actions"><button className="button" onClick=${() => saveNotice(false)} disabled=${busy}>Saqlash notice</button><button className="button ghost" onClick=${() => saveNotice(true)} disabled=${busy}>Tozalash</button></div>
+            <div className="field"><label>Havola</label><input className="input" value=${noticeForm.link} onInput=${(event) => setNoticeForm((current) => ({ ...current, link: event.target.value }))} placeholder="Ixtiyoriy https://... yoki /app/" /></div>
+            <div className="hero-actions"><button className="button" onClick=${() => saveNotice(false)} disabled=${busy}>Saqlash</button><button className="button ghost" onClick=${() => saveNotice(true)} disabled=${busy}>Tozalash</button></div>
           </div>
         </section>
         <section className="section">
@@ -743,25 +761,25 @@ function App() {
           <div className="panel search-box">
             <div className="form-grid">
               <div className="field"><label>Narx matni</label><input className="input" value=${proForm.priceText} onInput=${(event) => setProForm((current) => ({ ...current, priceText: event.target.value }))} placeholder="12000 so'm" /></div>
-              <div className="field"><label>Duration kun</label><input className="input" type="number" min="1" max="3650" value=${proForm.durationDays} onInput=${(event) => setProForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="30" /></div>
+              <div className="field"><label>Muddat (kun)</label><input className="input" type="number" min="1" max="3650" value=${proForm.durationDays} onInput=${(event) => setProForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="30" /></div>
             </div>
-            <div className="hero-actions"><button className="button" onClick=${saveProSettings} disabled=${busy}>Saqlash PRO</button></div>
+            <div className="hero-actions"><button className="button" onClick=${saveProSettings} disabled=${busy}>Saqlash</button></div>
           </div>
         </section>
         <section className="section">
           <${SectionSarlavha} iconName="megaphone" title="E'lon kanallari" copy="Tasdiqlangan e'lonlar shu kanallarga joylanadi" />
           <div className="hero">
             <div className="panel search-box">
-              <div className="field"><label>Kanal</label><input className="input" value=${channelInput} onInput=${(event) => setKanalInput(event.target.value)} placeholder="@channel or -100..." /></div>
+              <div className="field"><label>Kanal</label><input className="input" value=${channelInput} onInput=${(event) => setKanalInput(event.target.value)} placeholder="@kanal yoki -100..." /></div>
               <div className="hero-actions"><button className="button" onClick=${createAdKanal} disabled=${busy || !channelInput.trim()}>Kanal qo'shish</button></div>
             </div>
             <div className="panel hero-side">
-              ${(admin.ad_channels || []).length ? html`<div className="list">${(admin.ad_channels || []).map((channel) => html`<div className="list-card" key=${channel.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${channel.title}</div><div className="muted">${channel.channel_ref}</div></div><button className="button danger" onClick=${() => deleteAdKanal(channel.id)} disabled=${busy}>Remove</button></div></div>`)}</div>` : html`<${Empty} title="Kanallar yo'q" copy="Tasdiqlash uchun kamida bitta kanal qo'shing." />`}
+              ${(admin.ad_channels || []).length ? html`<div className="list">${(admin.ad_channels || []).map((channel) => html`<div className="list-card" key=${channel.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${channel.title}</div><div className="muted">${channel.channel_ref}</div></div><button className="button danger" onClick=${() => deleteAdKanal(channel.id)} disabled=${busy}>O'chirish</button></div></div>`)}</div>` : html`<${Empty} title="Kanallar yo'q" copy="Tasdiqlash uchun kamida bitta kanal qo'shing." />`}
             </div>
           </div>
         </section>
-        <section className="section"><${SectionSarlavha} iconName="stats" title="Kutilayotgan PRO to'lovlar" copy="Tasdiqlanishi kerak bo'lgan so'rovlar" />${admin.pending_payments?.length ? html`<div className="list">${admin.pending_payments.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>User ${item.user_tg_id}</div><div className="muted">${item.payment_code || "Kod yo'q"} Â· ${dateText(item.created_at)}</div></div><div className="tag">${item.status}</div></div>${item.comment ? html`<p className="muted">${item.comment}</p>` : null}<div className="hero-actions"><button className="button success" onClick=${() => reviewPayment(item.id, "approve")} disabled=${busy}>Tasdiqlash</button><button className="button danger" onClick=${() => reviewPayment(item.id, "reject")} disabled=${busy}>Rad etish</button></div></div>`)}</div>` : html`<${Empty} title="Kutilayotgan to'lov yo'q" copy="Barcha PRO so'rovlar ko'rib chiqilgan." />`}</section>
-        <section className="section"><${SectionSarlavha} iconName="megaphone" title="Kutilayotgan e'lon" copy="Moderatsiya navbatidagi e'lonlar" />${admin.pending_ads?.length ? html`<div className="list">${admin.pending_ads.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.title}</div><div className="muted">User ${item.user_tg_id} Â· ${dateText(item.created_at)}</div></div><div className="tag">${item.status}</div></div><p className="muted">${item.description}</p><div className="field"><label>Kanal</label><select className="input" value=${adKanalMap[item.id] || ""} onChange=${(event) => setAdKanalMap((current) => ({ ...current, [item.id]: event.target.value }))}>${(admin.ad_channels || []).map((channel) => html`<option value=${channel.id} key=${channel.id}>${channel.title}</option>`)}</select></div><div className="hero-actions"><button className="button success" onClick=${() => reviewAd(item.id, "approve")} disabled=${busy || !(admin.ad_channels || []).length}>Tasdiqlash</button><button className="button danger" onClick=${() => reviewAd(item.id, "reject")} disabled=${busy}>Rad etish</button></div></div>`)}</div>` : html`<${Empty} title="Kutilayotgan e'lon yo'q" copy="Moderatsiya navbati bo'sh." />`}</section>
+        <section className="section"><${SectionSarlavha} iconName="stats" title="Kutilayotgan PRO to'lovlar" copy="Tasdiqlanishi kerak bo'lgan so'rovlar" />${admin.pending_payments?.length ? html`<div className="list">${admin.pending_payments.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>Foydalanuvchi ${item.user_tg_id}</div><div className="muted">${item.payment_code || "Kod yo'q"} · ${dateText(item.created_at)}</div></div><div className="tag">${statusText(item.status)}</div></div>${item.comment ? html`<p className="muted">${item.comment}</p>` : null}<div className="hero-actions"><button className="button success" onClick=${() => reviewPayment(item.id, "approve")} disabled=${busy}>Tasdiqlash</button><button className="button danger" onClick=${() => reviewPayment(item.id, "reject")} disabled=${busy}>Rad etish</button></div></div>`)}</div>` : html`<${Empty} title="Kutilayotgan to'lov yo'q" copy="Barcha PRO so'rovlar ko'rib chiqilgan." />`}</section>
+        <section className="section"><${SectionSarlavha} iconName="megaphone" title="Kutilayotgan e'lonlar" copy="Moderatsiya navbatidagi e'lonlar" />${admin.pending_ads?.length ? html`<div className="list">${admin.pending_ads.map((item) => html`<div className="list-card" key=${item.id}><div className="list-row"><div><div style=${{ fontWeight: 700 }}>${item.title}</div><div className="muted">Foydalanuvchi ${item.user_tg_id} · ${dateText(item.created_at)}</div></div><div className="tag">${statusText(item.status)}</div></div><p className="muted">${item.description}</p><div className="field"><label>Kanal</label><select className="input" value=${adKanalMap[item.id] || ""} onChange=${(event) => setAdKanalMap((current) => ({ ...current, [item.id]: event.target.value }))}>${(admin.ad_channels || []).map((channel) => html`<option value=${channel.id} key=${channel.id}>${channel.title}</option>`)}</select></div><div className="hero-actions"><button className="button success" onClick=${() => reviewAd(item.id, "approve")} disabled=${busy || !(admin.ad_channels || []).length}>Tasdiqlash</button><button className="button danger" onClick=${() => reviewAd(item.id, "reject")} disabled=${busy}>Rad etish</button></div></div>`)}</div>` : html`<${Empty} title="Kutilayotgan e'lon yo'q" copy="Moderatsiya navbati bo'sh." />`}</section>
       ` : null}
 
       <nav className="bottom-nav">

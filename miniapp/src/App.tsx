@@ -28,6 +28,37 @@ import {
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 
+class ErrorBoundary extends React.Component<
+	{ children: React.ReactNode },
+	{ hasError: boolean; message: string }
+> {
+	constructor(props: { children: React.ReactNode }) {
+		super(props)
+		this.state = { hasError: false, message: '' }
+	}
+
+	static getDerivedStateFromError(error: Error) {
+		return { hasError: true, message: error?.message || 'Unknown error' }
+	}
+
+	componentDidCatch(error: Error) {
+		console.error('Miniapp render error:', error)
+	}
+
+	render() {
+		if (this.state.hasError) {
+			return (
+				<div className='mesh-bg min-h-screen grid place-items-center text-white'>
+					<div className='glass-panel rounded-2xl px-6 py-4 text-center text-sm'>
+						UI xatoligi: {this.state.message}
+					</div>
+				</div>
+			)
+		}
+		return this.props.children
+	}
+}
+
 type TabKey =
 	| 'home'
 	| 'search'
@@ -947,8 +978,9 @@ export default function App() {
 	}
 
 	return (
-		<div className='mesh-bg min-h-screen text-white'>
-			<div className='mx-auto max-w-[470px] px-4 pb-36 pt-4'>
+		<ErrorBoundary>
+			<div className='mesh-bg min-h-screen text-white'>
+				<div className='mx-auto max-w-[470px] px-4 pb-36 pt-4'>
 				{toast ? <div className='toast-msg'>{toast}</div> : null}
 				<header className='glass-panel mb-4 rounded-[22px] px-4 py-3'>
 					<div className='flex items-center justify-between'>
@@ -1887,6 +1919,7 @@ export default function App() {
 				) : null}
 			</AnimatePresence>
 		</div>
+		</ErrorBoundary>
 	)
 }
 

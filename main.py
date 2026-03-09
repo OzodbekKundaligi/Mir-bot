@@ -16,7 +16,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ContentType
 from aiogram.exceptions import ClientDecodeError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -1906,11 +1906,13 @@ BTN_SERIAL_DONE = "✅ Serialni yakunlash"
 BTN_SEARCH_NAME = "🔎 Qidirish"
 BTN_FAVORITES = "⭐ Saqlangan"
 BTN_TOP_VIEWED = "🏆 Top"
+BTN_SETTINGS = "⚙️ Sozlamalar"
 BTN_NOTIFICATIONS = "🔔 Sozlama"
 BTN_PRO_BUY = "👑 PRO"
 BTN_PRO_STATUS = "💎 Holat"
 BTN_CREATE_AD = "📢 E'lon"
 BTN_MY_ADS = "🗂 Postlarim"
+BTN_HELP = "❓ Yordam"
 BTN_PRO_MANAGE = "👑 PRO boshqaruv"
 BTN_PRO_PRICE = "💰 PRO narx"
 BTN_PRO_DURATION = "⏳ PRO muddat"
@@ -1935,9 +1937,11 @@ LEGACY_MENU_TEXTS = {
     "trending",
     "trend",
     "🏆 top ko'rilganlar",
+    "⚙️ sozlamalar",
     "🔔 bildirishnomalar",
     "👑 pro olish",
     "💎 pro holatim",
+    "❓ yordam",
     "📢 e'lon berish",
     "🗂 e'lonlarim",
     "📢 majburiy obuna",
@@ -2116,17 +2120,24 @@ def is_confirm_text(value: str | None) -> bool:
 
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
+    buttons: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
+        [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_PRO_BUY)],
+        [KeyboardButton(text=BTN_SETTINGS)],
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+
+def settings_menu_kb(is_admin: bool, is_pro: bool) -> ReplyKeyboardMarkup:
     buttons: list[list[KeyboardButton]] = []
     if get_mini_app_launch_url():
         buttons.append([KeyboardButton(text=BTN_MINI_APP)])
-    buttons.extend([
-        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
-        [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_NOTIFICATIONS)],
-        [KeyboardButton(text=BTN_PRO_BUY), KeyboardButton(text=BTN_PRO_STATUS)],
-        [KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)],
-    ])
+    buttons.append([KeyboardButton(text=BTN_NOTIFICATIONS), KeyboardButton(text=BTN_HELP)])
+    if is_pro:
+        buttons.append([KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)])
     if is_admin:
         buttons.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
+    buttons.append([KeyboardButton(text=BTN_BACK)])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
@@ -2279,15 +2290,15 @@ def build_subscribe_keyboard(channels: list[dict[str, Any]]) -> InlineKeyboardMa
         ref = channel["channel_ref"]
         title = channel["title"] or ref
         if join_link:
-            builder.row(InlineKeyboardButton(text=f"📌 {title}", url=join_link))
+            builder.row(InlineKeyboardButton(text=f"🔗 {title}", url=join_link))
         elif ref.startswith("@"):
             builder.row(
                 InlineKeyboardButton(
-                    text=f"📌 {title}",
+                    text=f"🔗 {title}",
                     url=f"https://t.me/{ref[1:]}",
                 )
             )
-    builder.row(InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub"))
+    builder.row(InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub"))
     return builder.as_markup()
 
 
@@ -3506,9 +3517,9 @@ async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[s
 
 async def ask_for_subscription(message: Message, channels: list[dict[str, Any]]) -> None:
     text_lines = [
-        "🚫 Avval kanallarga obuna bo'ling.",
+        "🔒 Davom etish uchun obuna bo'ling.",
         "",
-        "📢 Kanallar:",
+        "Quyidagi kanallarga kirib, so'ng tekshiring:",
     ]
     for ch in channels:
         title = ch["title"] or ch["channel_ref"]
@@ -3653,14 +3664,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             return
 
     admin = db.is_admin(message.from_user.id)
-    mini_app_hint = "\n▣ Ilova tugmasi orqali katalogni oching." if get_mini_app_url() else ""
-    text = (
-        "🎬 Kino bot\n"
-        "🔢 Kod yuboring yoki menyudan tanlang."
-        f"{mini_app_hint}"
-        + ("\n🛠 Admin panel ham ochiq." if admin else "")
+    first_name = (message.from_user.first_name or "foydalanuvchi").strip()
+    await message.answer(
+        f"Salom, {first_name}\nKino kodini yuboring.",
+        reply_markup=main_menu_kb(admin),
     )
-    await message.answer(text, reply_markup=main_menu_kb(admin))
 
 
 @router.message(F.text.in_({"/me", "/whoami", "/chat_id"}))
@@ -3731,12 +3739,12 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
                 await callback.answer("✅ Tasdiqlandi")
                 return
         await callback.message.answer(
-            "✅ Obuna tasdiqlandi!\n\n🔎 Endi kino yoki serial kodini chatga yozing."
+            "✅ Obuna tasdiqlandi.\nKod yuboring."
         )
         await callback.answer("✅ Tasdiqlandi")
     else:
         await callback.message.answer(
-            "❗ Hali ham barcha kanallarga obuna bo'linmagan.",
+            "Hali barcha kanallarga kirmagansiz.",
             reply_markup=build_subscribe_keyboard(channels),
         )
         await callback.answer("❗ Obuna to'liq emas")
@@ -3747,15 +3755,29 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🛠 Admin panel", reply_markup=admin_menu_kb())
+    await message.answer("Panel ochildi.", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
 async def back_to_main(message: Message, state: FSMContext) -> None:
-    if not message.from_user or not guard_admin(message):
+    if not message.from_user:
         return
     await state.clear()
-    await message.answer("🏠 Asosiy menyu", reply_markup=main_menu_kb(True))
+    await message.answer("Menyu.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+
+
+@router.message(F.text.in_({BTN_SETTINGS, "Sozlamalar"}))
+async def open_settings(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    await state.clear()
+    await message.answer(
+        "Sozlamalar.",
+        reply_markup=settings_menu_kb(
+            db.is_admin(message.from_user.id),
+            db.is_pro_active(message.from_user.id),
+        ),
+    )
 
 
 @router.message(F.text.in_({BTN_PRO_BUY, "Pro olish"}))
@@ -3764,7 +3786,13 @@ async def pro_buy(message: Message) -> None:
         return
     db.add_user(message.from_user.id, message.from_user.full_name)
     if db.is_admin(message.from_user.id):
-        await message.answer("👑 Siz adminsiz.\nPRO sizda cheksiz aktiv.", reply_markup=main_menu_kb(True))
+        await message.answer(build_pro_status_text(message.from_user.id), reply_markup=main_menu_kb(True))
+        return
+    if db.is_pro_active(message.from_user.id):
+        await message.answer(
+            build_pro_status_text(message.from_user.id) + "\n\nQayta olish muddati tugagach ochiladi.",
+            reply_markup=main_menu_kb(False),
+        )
         return
     await message.answer(build_pro_offer_text(message.from_user.id), reply_markup=build_pro_purchase_kb())
 
@@ -3774,9 +3802,12 @@ async def pro_paid_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not callback.from_user or not callback.message:
         await callback.answer()
         return
+    if db.is_admin(callback.from_user.id) or db.is_pro_active(callback.from_user.id):
+        await callback.answer("PRO allaqachon faol.", show_alert=True)
+        return
     await state.set_state(PaymentState.waiting_proof)
     await callback.message.answer(
-        "💳 To'lov skrinini yuboring.\n`/skip` ham bo'ladi.",
+        "To'lov skrinini yuboring.\n`/skip` ham bo'ladi.",
         reply_markup=cancel_kb(),
     )
     await callback.answer()
@@ -3857,7 +3888,24 @@ async def notification_settings(message: Message) -> None:
     if not message.from_user:
         return
     settings = db.get_notification_settings(message.from_user.id)
-    await message.answer("🔔 Bildirishnoma sozlamalari", reply_markup=build_notification_settings_kb(settings))
+    await message.answer("Bildirishnoma sozlamalari.", reply_markup=build_notification_settings_kb(settings))
+
+
+@router.message(Command("help"))
+@router.message(F.text.in_({BTN_HELP, "Yordam"}))
+async def help_menu(message: Message) -> None:
+    if not message.from_user:
+        return
+    await message.answer(
+        "Yordam\n\n"
+        "1. Kino kodini yuboring.\n"
+        "2. Qidirish tugmasi bilan nom bo'yicha qidiring.\n"
+        "3. Qo'shimcha bo'limlar Sozlamalarda.",
+        reply_markup=settings_menu_kb(
+            db.is_admin(message.from_user.id),
+            db.is_pro_active(message.from_user.id),
+        ),
+    )
 
 
 @router.callback_query(F.data.startswith("notif:"))
@@ -3882,9 +3930,9 @@ async def top_viewed_content(message: Message) -> None:
     items = db.list_top_viewed_content(limit=20)
     kb = build_search_results_kb(items)
     if not kb:
-        await message.answer("📭 Top topilmadi.")
+        await message.answer("Top bo'sh.")
         return
-    await message.answer("🏆 Top", reply_markup=kb)
+    await message.answer("Top.", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_CREATE_AD, "E'lon berish"}))
@@ -6068,8 +6116,7 @@ async def search_by_name_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(SearchState.waiting_query)
     await message.answer(
-        "🔎 Qidiriladigan kino/serial nomini yuboring.\n"
-        "Bekor qilish uchun: ❌ Bekor qilish",
+        "Nom yoki kod yozing.",
         reply_markup=cancel_kb(),
     )
 
@@ -6088,8 +6135,8 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
             reply_markup=main_menu_kb(db.is_admin(message.from_user.id)),
         )
         return
-    if len(text) < 2:
-        await message.answer("Kamida 2 ta belgi kiriting.")
+    if len(text) < 1:
+        await message.answer("Nom yoki kod yozing.")
         return
 
     ok, channels = await ensure_subscription(message.from_user.id, message.bot)
@@ -6113,7 +6160,7 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
     await state.clear()
     kb = build_search_results_kb(results)
     await message.answer(
-        f"✅ Topildi: {len(results)} ta natija.\nKerakli kontentni tanlang:",
+        f"{len(results)} ta natija topildi.",
         reply_markup=kb,
     )
 
@@ -6124,10 +6171,10 @@ async def list_favorites(message: Message) -> None:
         return
     favorites = db.list_favorites(message.from_user.id, limit=100)
     if not favorites:
-        await message.answer("📭 Sevimlilar ro'yxati bo'sh.")
+        await message.answer("Saqlanganlar bo'sh.")
         return
     await message.answer(
-        f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
+        f"Saqlanganlar: {len(favorites)} ta",
         reply_markup=build_favorites_kb(favorites),
     )
 
@@ -6345,12 +6392,12 @@ async def inline_search(inline_query: InlineQuery) -> None:
         return
 
     query = (inline_query.query or "").strip()
-    if len(query) < 2 and not query.isdigit():
+    if len(query) < 1 and not query.isdigit():
         await inline_query.answer(
             [],
             is_personal=True,
             cache_time=1,
-            switch_pm_text="Kamida 2 harf yoki kod kiriting",
+            switch_pm_text="Nom yoki kod kiriting",
             switch_pm_parameter="inline",
         )
         return
@@ -6504,6 +6551,9 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if text in {BTN_BACK.lower(), "⬅️ ortga"}:
         await back_to_main(message, state)
         return
+    if text in {BTN_SETTINGS.lower(), "⚙️ sozlamalar"}:
+        await open_settings(message, state)
+        return
     if text in {BTN_SEARCH_NAME.lower(), "🔎 nom bo'yicha qidirish"}:
         await search_by_name_start(message, state)
         return
@@ -6521,6 +6571,9 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
         return
     if text in {BTN_NOTIFICATIONS.lower(), "🔔 bildirishnomalar"}:
         await notification_settings(message)
+        return
+    if text in {BTN_HELP.lower(), "❓ yordam"}:
+        await help_menu(message)
         return
     if text in {BTN_PRO_BUY.lower(), "👑 pro olish"}:
         await pro_buy(message)
@@ -6619,9 +6672,11 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_SEARCH_NAME.lower(),
         BTN_FAVORITES.lower(),
         BTN_TOP_VIEWED.lower(),
+        BTN_SETTINGS.lower(),
         BTN_NOTIFICATIONS.lower(),
         BTN_PRO_BUY.lower(),
         BTN_PRO_STATUS.lower(),
+        BTN_HELP.lower(),
         BTN_CREATE_AD.lower(),
         BTN_MY_ADS.lower(),
         BTN_PRO_MANAGE.lower(),
@@ -6654,9 +6709,11 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "nom bo'yicha qidirish",
         "sevimlilarim",
         "top ko'rilganlar",
+        "sozlamalar",
         "bildirishnomalar",
         "pro olish",
         "pro holatim",
+        "yordam",
         "e'lon berish",
         "e'lonlarim",
         "pro boshqarish",

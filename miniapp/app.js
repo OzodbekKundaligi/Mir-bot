@@ -250,6 +250,18 @@ function PosterCard({ item, onOpen, onFavorite, onReact }) {
   return html`<div className="sheet-backdrop" onClick=${onClose}><div className="sheet" onClick=${(event) => event.stopPropagation()}><div className="sheet-header"><div><div className="eyebrow">${item.content_type === "serial" ? "Serial haqida" : "Kino haqida"}</div><h2 style=${{ margin: "8px 0 0", fontSize: "28px" }}>${item.title}</h2></div><button className="icon-button" onClick=${onClose}>${icon("close")}</button></div><div className="sheet-body"><${Media} item=${item} detail=${true} /><div className="detail-grid"><div className="detail-panel"><div className="chips" style=${{ marginBottom: "14px" }}><span className="chip">${item.code || "—"}</span><span className="chip">${item.year || "—"}</span><span className="chip">${item.quality || "HD"}</span>${item.episodes_count ? html`<span className="chip">${item.episodes_count} qism</span>` : null}</div><p className="muted" style=${{ margin: 0, lineHeight: 1.7 }}>${item.description || "Tavsif kiritilmagan."}</p>${item.genres?.length ? html`<div className="chips" style=${{ marginTop: "16px" }}>${item.genres.map((genre) => html`<span className="tag" key=${genre}>${genre}</span>`)}</div>` : null}</div><div className="detail-panel"><div className="list"><div className="list-row"><span className="muted">Ko'rishlar</span><strong>${compact(item.views)}</strong></div><div className="list-row"><span className="muted">Yuklab olish</span><strong>${compact(item.downloads)}</strong></div><div className="list-row"><span className="muted">Yoqdi</span><strong>${compact(item.likes)}</strong></div><div className="list-row"><span className="muted">Yoqmadi</span><strong>${compact(item.dislikes)}</strong></div></div><div className="hero-actions"><button className="button" onClick=${() => onBotOpen(item)}>${icon("play")}Davom etish</button><button className="button secondary" onClick=${() => onFavorite(item)}>${item.is_favorite ? "Saqlangan" : "Saqlash"}</button><button className="button ghost" onClick=${() => onShare(item)}>${icon("link")}Ulashish</button></div><div className="content-actions compact"><button className=${joinClass("action-pill", item.user_reaction === "like" && "active")} onClick=${() => onReact(item, "like")} aria-label="Yoqdi">${icon("thumbsUp")}<span>${compact(item.likes)}</span></button><button className=${joinClass("action-pill", item.user_reaction === "dislike" && "active")} onClick=${() => onReact(item, "dislike")} aria-label="Yoqmadi">${icon("thumbsDown")}<span>${compact(item.dislikes)}</span></button></div>${item.episodes?.length ? html`<div style=${{ marginTop: "16px" }}><div className="metric-label">Qismlar</div><div className="chips">${item.episodes.map((episode) => html`<span className="tag" key=${episode.episode_number}>${episode.episode_number}</span>`)}</div></div>` : null}</div></div></div></div></div>`;
 }
 
+function ScreenLead({ iconName, title, copy, badge, action }) {
+  return html`<section className="section"><div className="screen-lead-card"><div className="screen-lead-main"><div className="screen-lead-icon">${icon(iconName)}</div><div className="screen-lead-copy-block"><div className="eyebrow">Mini app</div><h2 className="screen-lead-title">${title}</h2><p className="screen-lead-copy">${copy}</p></div></div><div className="screen-lead-side">${badge ? html`<span className="screen-lead-badge">${badge}</span>` : null}${action || null}</div></div></section>`;
+}
+
+function StatTiles({ items }) {
+  return html`<div className="stat-tiles">${items.map((item) => html`<div className="stat-tile" key=${item.label}><div className="stat-tile-icon">${icon(item.iconName)}</div><div className="stat-tile-copy"><span>${item.label}</span><strong>${item.value}</strong></div></div>`)}</div>`;
+}
+
+function FeatureRow({ iconName, title, copy, action, badge }) {
+  return html`<div className="feature-row"><div className="feature-row-main"><div className="feature-row-icon">${icon(iconName)}</div><div><strong>${title}</strong><p>${copy}</p></div></div><div className="feature-row-side">${badge ? html`<span className="tag">${badge}</span>` : null}${action || null}</div></div>`;
+}
+
 function App() {
   const [boot, setBoot] = useState(null);
   const [tab, setTab] = useState("home");
@@ -709,6 +721,38 @@ function App() {
     `${compact(currentFeatured?.views)} ko'rish`,
     `★ ${Number(currentFeatured?.rating || 0).toFixed(1)}`,
   ];
+  const homeShortcuts = [
+    { key: "search", iconName: "search", title: "Qidiruv", copy: "Kod va nom" },
+    { key: "saved", iconName: "bookmark", title: "Saqlangan", copy: `${sections.favorites?.length || 0} ta` },
+    { key: "pro", iconName: "crown", title: "PRO", copy: boot.user.is_pro ? "Faol" : "Tarif" },
+    { key: "news", iconName: "spark", title: "Yangiliklar", copy: `${newsItems.length} ta` },
+  ];
+  const savedStats = [
+    { iconName: "bookmark", label: "Saqlangan", value: compact(sections.favorites?.length || 0) },
+    { iconName: "stats", label: "Top", value: compact(sections.top_viewed?.length || 0) },
+  ];
+  const proStats = [
+    { iconName: "crown", label: "Tarif", value: boot.settings.pro_price_text || "—" },
+    { iconName: "stats", label: "Muddat", value: `${boot.settings.pro_duration_days || 0} kun` },
+    { iconName: "link", label: "Kod", value: boot.payment.code || "—" },
+  ];
+  const proFeatures = [
+    { iconName: "spark", title: "Yangi kontent", copy: "Premium foydalanuvchilar uchun tezkor xabarlar." },
+    { iconName: "megaphone", title: "E'lon joylash", copy: "Moderatsiyadan o'tgan postlarni joylash imkoniyati." },
+    { iconName: "bookmark", title: "Sinxron tarix", copy: "Saqlanganlar bot va ilova o'rtasida bir xil qoladi." },
+    { iconName: "shield", title: "Yagona tarif", copy: "Narx va muddat admin tomonidan markaziy boshqariladi." },
+  ];
+  const profileStats = [
+    { iconName: "bookmark", label: "Saqlangan", value: compact(sections.favorites?.length || 0) },
+    { iconName: "stats", label: "Top kartalar", value: compact(sections.top_viewed?.length || 0) },
+    { iconName: "crown", label: "Status", value: boot.user.is_pro ? "PRO" : "Oddiy" },
+  ];
+  const adminOverview = [
+    { iconName: "user", label: "Foydalanuvchilar", value: compact(admin.total_users || 0) },
+    { iconName: "crown", label: "PRO", value: compact(admin.total_pro_users || 0) },
+    { iconName: "play", label: "Kinolar", value: compact(admin.total_movies || 0) },
+    { iconName: "grid", label: "Seriallar", value: compact(admin.total_serials || 0) },
+  ];
   const shellClass = joinClass("app-shell", tab === "admin" && boot.user.is_admin && "app-shell-admin");
 
   return html`
@@ -762,6 +806,12 @@ function App() {
                  ${featuredItems.length > 1 ? html`<div className="hero-dots">${featuredItems.map((item, index) => html`<button className=${joinClass("hero-dot", index === (featuredIndex % Math.max(featuredItems.length, 1)) && "active")} key=${`${item.content_type}-${item.id}`} onClick=${() => setFeaturedIndex(index)} aria-label=${item.title}></button>`)}</div>` : null}
                </div>
              </div>
+           </div>
+         </section>
+
+         <section className="section">
+           <div className="shortcut-grid">
+             ${homeShortcuts.map((item) => html`<button className="shortcut-card" key=${item.key} onClick=${() => setTab(item.key)}><div className="shortcut-icon">${icon(item.iconName)}</div><div><strong>${item.title}</strong><span>${item.copy}</span></div>${icon("arrowRight")}</button>`)}
            </div>
          </section>
 
@@ -826,8 +876,8 @@ function App() {
       ` : null}
 
       ${tab === "search" ? html`
+        <${ScreenLead} iconName="search" title="Qidiruv" copy="Kod, nom yoki tavsif bo'yicha qidiring." badge=${searchSorov.trim() ? `${searchResults.length} natija` : "Jonli qidiruv"} />
         <section className="section">
-          <${SectionSarlavha} iconName="search" title="Qidirish" copy="Kod, nom yoki tavsif bo'yicha qidiring" />
           <div className="panel search-box">
             <div className="field"><label>So'rov</label><input className="input" value=${searchSorov} onInput=${(event) => setQidirishSorov(event.target.value)} placeholder="Kino kodi yoki nomi" /></div>
             <div className="chips">${SEARCH_TYPES.map((item) => html`<button className=${joinClass("chip", searchType === item.key && "active")} key=${item.key} onClick=${() => setQidirishType(item.key)}>${item.label}</button>`)}</div>
@@ -840,15 +890,17 @@ function App() {
       ` : null}
 
       ${tab === "saved" ? html`
+        <${ScreenLead} iconName="bookmark" title="Saqlanganlar" copy="Bot va mini app o'rtasida bir xil turadigan sevimli kontentlar." badge=${`${sections.favorites?.length || 0} ta`} />
+        ${sections.favorites?.length ? html`<section className="section"><${StatTiles} items=${savedStats} /></section>` : null}
         <section className="section">
-          <${SectionSarlavha} iconName="bookmark" title="Saqlanganlar" copy="Bot bilan sinxronlangan sevimlilar" />
           ${sections.favorites?.length ? html`<div className="content-grid">${sections.favorites.map((item) => html`<${Card} key=${item.id} item=${item} onOpen=${openDetail} onFavorite=${favorite} onReact=${react} />`)}</div>` : html`<${Empty} title="Saqlanganlar bo'sh" copy="Istalgan kartadagi saqlash tugmasi orqali bu yerga qo'shing." />`}
         </section>
       ` : null}
 
       ${tab === "pro" ? html`
+        <${ScreenLead} iconName="crown" title="PRO bo'limi" copy="Yagona tarif, premium kirish va to'lov havolalari shu yerda." badge=${boot.user.is_pro ? "PRO faol" : "Oddiy holat"} />
+        <section className="section"><${StatTiles} items=${proStats} /></section>
         <section className="section">
-          <${SectionSarlavha} iconName="crown" title="PRO bo'limi" copy="Yagona tarif adminlar tomonidan boshqariladi" />
           <div className="hero">
             <div className="panel hero-main">
               <div className="eyebrow">Joriy holat</div>
@@ -868,12 +920,13 @@ function App() {
             </div>
           </div>
         </section>
+        <section className="section"><div className="feature-list">${proFeatures.map((item) => html`<${FeatureRow} key=${item.title} iconName=${item.iconName} title=${item.title} copy=${item.copy} />`)}</div></section>
       ` : null}
 
       ${tab === "news" ? html`
+        <${ScreenLead} iconName="spark" title="Yangiliklar" copy="Admin e'lonlari va oxirgi qo'shilgan kontentlar shu bo'limda." badge=${`${newsItems.length} ta`} />
         <section className="section">
-          <${SectionSarlavha} iconName="spark" title="Yangiliklar" copy="Admin e'lonlari va oxirgi qo'shilgan kontent" />
-          ${newsItems.length ? html`<div className="news-feed">${newsItems.map((item) => html`<article className="news-feed-item" key=${item.id || item.created_at}><div className="news-feed-top"><div><div className="eyebrow">${item.news_type === "notice" ? "Admin xabari" : item.news_type === "serial" ? "Yangi serial" : "Yangi kino"}</div><h3>${item.title || "Yangilik"}</h3></div><span className="tag">${dateText(item.created_at)}</span></div><p>${item.description || "Yangi kontent qo'shildi."}</p><div className="hero-actions">${item.news_type === "notice" ? html`${item.link ? html`<button className="button secondary" onClick=${() => openUrl(item.link)}>Batafsil</button>` : null}` : html`<button className="button" onClick=${() => openDetail(item)}>Ko'rish</button><button className="button ghost" onClick=${() => openInBot(item, notify, boot?.links)}>Botda davom etish</button>`}</div></article>`)}</div>` : html`<${Empty} title="Yangilik yo'q" copy="Yangi xabarlar va kontent shu bo'limda chiqadi." />`}
+          ${newsItems.length ? html`<div className="news-feed">${newsItems.map((item) => html`<article className="news-feed-item" key=${item.id || item.created_at}>${item.news_type !== "notice" ? html`<div className="news-feed-media">${item.preview_url ? html`<img src=${item.preview_url} alt=${item.title || "Yangilik"} loading="lazy" />` : html`<div className="news-feed-fallback">${icon(item.news_type === "serial" ? "grid" : "play")}</div>`}</div>` : html`<div className="news-feed-media notice">${icon("spark")}</div>`}<div className="news-feed-content"><div className="news-feed-top"><div><div className="eyebrow">${item.news_type === "notice" ? "Admin xabari" : item.news_type === "serial" ? "Yangi serial" : "Yangi kino"}</div><h3>${item.title || "Yangilik"}</h3></div><span className="tag">${dateText(item.created_at)}</span></div><p>${item.description || "Yangi kontent qo'shildi."}</p><div className="hero-actions">${item.news_type === "notice" ? html`${item.link ? html`<button className="button secondary" onClick=${() => openUrl(item.link)}>Batafsil</button>` : null}` : html`<button className="button" onClick=${() => openDetail(item)}>Ko'rish</button><button className="button ghost" onClick=${() => openInBot(item, notify, boot?.links)}>Botda davom etish</button>`}</div></div></article>`)}</div>` : html`<${Empty} title="Yangilik yo'q" copy="Yangi xabarlar va kontent shu bo'limda chiqadi." />`}
         </section>
       ` : null}
 
@@ -890,34 +943,34 @@ function App() {
       ` : null}
 
       ${tab === "profile" ? html`
+        <${ScreenLead} iconName="user" title="Profil" copy="Hisob, ID va bildirishnoma sozlamalari shu bo'limda." badge=${boot.user.is_admin ? "Admin" : boot.user.is_pro ? "PRO" : "Oddiy"} />
         <section className="section">
-          <${SectionSarlavha} iconName="grid" title="Profil" copy="Hisob va bildirishnoma sozlamalari" />
-          <div className="hero">
-            <div className="panel hero-main">
-              <div className="eyebrow">Hisob</div>
-              <h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.user.full_name || boot.user.username || boot.user.id}</h2>
-              <p className="subheadline">Telegram ID: ${boot.user.id}<br />PRO: ${boot.user.is_pro ? "Faol" : "Faol emas"}<br />Admin: ${yesNo(boot.user.is_admin)}</p>
-              <div className="hero-actions"><button className="button secondary" onClick=${() => copyText(boot.user.id, notify)}>ID nusxa olish</button><button className="button ghost" onClick=${() => sendToBot({ action: "open_notifications" }, notify, boot?.links)}>Bot sozlamalari</button></div>
-            </div>
-            <div className="panel hero-side">
-              <div className="list-card"><div className="list-row"><span>Yangi kontent</span><button className=${joinClass("button", boot.notifications.new_content ? "success" : "ghost")} onClick=${() => toggleNotification("new_content")}>${boot.notifications.new_content ? "Yoqilgan" : "O'chiq"}</button></div></div>
-              <div className="list-card"><div className="list-row"><span>PRO yangiliklari</span><button className=${joinClass("button", boot.notifications.pro_updates ? "success" : "ghost")} onClick=${() => toggleNotification("pro_updates")}>${boot.notifications.pro_updates ? "Yoqilgan" : "O'chiq"}</button></div></div>
-              <div className="list-card"><div className="list-row"><span>E'lon xabarlari</span><button className=${joinClass("button", boot.notifications.ads_updates ? "success" : "ghost")} onClick=${() => toggleNotification("ads_updates")}>${boot.notifications.ads_updates ? "Yoqilgan" : "O'chiq"}</button></div></div>
-            </div>
+          <div className="profile-hero-card"><div className="profile-avatar">${initialsFromName(boot.user.full_name || boot.user.username || boot.user.id)}</div><div className="profile-hero-copy"><h3>${boot.user.full_name || boot.user.username || boot.user.id}</h3><p>Telegram ID: ${boot.user.id}</p><div className="profile-hero-badges"><span className="tag">${boot.user.is_pro ? "PRO faol" : "Oddiy foydalanuvchi"}</span>${boot.user.is_admin ? html`<span className="tag">Admin</span>` : null}</div></div></div>
+        </section>
+        <section className="section"><${StatTiles} items=${profileStats} /></section>
+        <section className="section">
+          <div className="feature-list">
+            <${FeatureRow} iconName="link" title="Telegram ID" copy=${`ID: ${boot.user.id}`} action=${html`<button className="button secondary" onClick=${() => copyText(boot.user.id, notify)}>Nusxa</button>`} />
+            <${FeatureRow} iconName="search" title="Bot sozlamalari" copy="Telegram bot ichidagi qo'shimcha boshqaruv bo'limlari." action=${html`<button className="button ghost" onClick=${() => sendToBot({ action: "open_notifications" }, notify, boot?.links)}>Botga o'tish</button>`} />
+            <${FeatureRow} iconName="spark" title="Yangi kontent" copy="Yangi kino va seriallar haqida xabar." action=${html`<button className=${joinClass("button", boot.notifications.new_content ? "success" : "ghost")} onClick=${() => toggleNotification("new_content")}>${boot.notifications.new_content ? "Yoqilgan" : "O'chiq"}</button>`} />
+            <${FeatureRow} iconName="crown" title="PRO yangiliklari" copy="PRO status va tarif yangilanishlari." action=${html`<button className=${joinClass("button", boot.notifications.pro_updates ? "success" : "ghost")} onClick=${() => toggleNotification("pro_updates")}>${boot.notifications.pro_updates ? "Yoqilgan" : "O'chiq"}</button>`} />
+            <${FeatureRow} iconName="megaphone" title="E'lon xabarlari" copy="E'lon moderatsiyasi va status xabarlari." action=${html`<button className=${joinClass("button", boot.notifications.ads_updates ? "success" : "ghost")} onClick=${() => toggleNotification("ads_updates")}>${boot.notifications.ads_updates ? "Yoqilgan" : "O'chiq"}</button>`} />
           </div>
         </section>
       ` : null}
 
       ${tab === "admin" && boot.user.is_admin ? html`
+        <${ScreenLead} iconName="shield" title="Admin panel" copy="Foydalanuvchilar, to'lovlar, e'lonlar va global sozlamalar shu yerda boshqariladi." badge="To'liq kirish" />
+        <section className="section"><${StatTiles} items=${adminOverview} /></section>
         <section className="section">
-          <${SectionSarlavha} iconName="shield" title="Tezkor amallar" copy="Botdagi to'liq admin oqimlariga to'g'ridan-to'g'ri o'tish" />
+          <${SectionSarlavha} iconName="shield" title="Tezkor amallar" copy="Botdagi asosiy oqimlarga bir tegishda o'tish" />
           <div className="quick-grid">
             ${ADMIN_BOT_ACTIONS.map((item) => html`<button className="quick-action-card" key=${item.action} onClick=${() => sendToBot({ action: item.action }, notify, boot?.links)}>${icon(item.icon)}<div><strong>${item.label}</strong><span>Botga o'tish</span></div>${icon("arrowRight")}</button>`)}
           </div>
         </section>
         <section className="section">
-          <${SectionSarlavha} iconName="shield" title="Admin boshqaruvi" copy="Asosiy ko'rsatkichlar va global media rejimi" />
-          <div className="hero"><div className="panel hero-side"><div className="metric-grid"><div className="metric-card"><div className="metric-label">Foydalanuvchilar</div><div className="metric-value">${admin.total_users || 0}</div></div><div className="metric-card"><div className="metric-label">PRO foydalanuvchilar</div><div className="metric-value">${admin.total_pro_users || 0}</div></div><div className="metric-card"><div className="metric-label">Kinolar</div><div className="metric-value">${admin.total_movies || 0}</div></div><div className="metric-card"><div className="metric-label">Seriallar</div><div className="metric-value">${admin.total_serials || 0}</div></div></div></div><div className="panel hero-main"><div className="eyebrow">Media rejimi</div><h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.settings.content_mode_label}</h2><p className="subheadline">Bu sozlama barcha foydalanuvchilar uchun bir xil ishlaydi.</p><div className="hero-actions"><button className="button secondary" onClick=${() => setContentMode("private")}>Yopiq</button><button className="button secondary" onClick=${() => setContentMode("public")}>Ochiq</button></div></div></div>
+          <${SectionSarlavha} iconName="shield" title="Global media rejimi" copy="Barcha foydalanuvchilarga bir xil qo'llanadi." />
+          <div className="hero"><div className="panel hero-main"><div className="eyebrow">Joriy holat</div><h2 style=${{ margin: "8px 0 10px", fontSize: "32px" }}>${boot.settings.content_mode_label}</h2><p className="subheadline">Video va media himoyasi uchun global rejim shu yerda boshqariladi.</p><div className="hero-actions"><button className="button secondary" onClick=${() => setContentMode("private")}>Yopiq</button><button className="button secondary" onClick=${() => setContentMode("public")}>Ochiq</button></div></div></div>
         </section>
         <section className="section">
           <${SectionSarlavha} iconName="user" title="Foydalanuvchilar" copy="ID yoki ism bo'yicha toping va huquqlarni boshqaring." />

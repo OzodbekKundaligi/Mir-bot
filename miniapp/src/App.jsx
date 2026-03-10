@@ -89,6 +89,16 @@ function initials(value) {
         .map(item => item[0]?.toUpperCase() || '')
         .join('');
 }
+function userDisplayName(user) {
+    return String(user?.full_name || user?.username || user?.id || 'User');
+}
+function userAvatar(user) {
+    const telegramPhoto = String(tg?.initDataUnsafe?.user?.photo_url || '').trim();
+    if (telegramPhoto)
+        return telegramPhoto;
+    const name = userDisplayName(user);
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f172a&color=ffffff&bold=true`;
+}
 async function api(path, options = {}) {
     const response = await fetch(path, {
         method: options.method || 'GET',
@@ -141,8 +151,17 @@ function openUrl(url) {
     }
     window.open(target, '_blank', 'noopener,noreferrer');
 }
-function Media({ item }) {
+function Media({ item, autoPlay = false }) {
     if (item.preview_kind === 'video' && item.preview_url) {
+        if (!autoPlay) {
+            return (<div className='relative grid h-full w-full place-items-center bg-gradient-to-br from-accent/10 to-accent-purple/20'>
+				<div className='absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.14),transparent_58%)]'/>
+				<div className='glass-pill flex items-center gap-2'>
+					<Play size={14}/>
+					<span>Video preview</span>
+				</div>
+			</div>);
+        }
         return (<video className='h-full w-full object-cover' src={item.preview_url} muted loop autoPlay playsInline preload='metadata'/>);
     }
     if (item.preview_url) {
@@ -153,7 +172,7 @@ function Media({ item }) {
 		</div>);
 }
 function Card({ item, onOpen, onFav, onReact, }) {
-    return (<article className='overflow-hidden rounded-[20px] border border-white/10 bg-white/[0.03] backdrop-blur-[40px]'>
+    return (<article className='overflow-hidden rounded-[20px] border border-white/10 bg-white/[0.03] backdrop-blur-[18px]'>
 			<button className='relative block aspect-video w-full text-left' onClick={() => onOpen(item)}>
 				<Media item={item}/>
 				<div className='absolute inset-0 bg-gradient-to-t from-black/65 to-transparent'/>
@@ -581,6 +600,13 @@ export default function App() {
         ...sections.recent_movies,
         ...sections.recent_serials,
     ].slice(0, 8);
+    const currentUserName = userDisplayName(boot?.user);
+    const currentUserAvatar = userAvatar(boot?.user);
+    const featuredHeroStyle = featured?.preview_url && featured?.preview_kind !== 'video'
+        ? {
+            backgroundImage: `linear-gradient(180deg, rgba(6,9,15,0.2), rgba(6,9,15,0.9)), url(${featured.preview_url})`,
+        }
+        : undefined;
     const news = [
         ...(boot?.notice?.text
             ? [
@@ -636,21 +662,15 @@ export default function App() {
 							</div>
 						</div>
 						<button className='avatar-pill' onClick={() => setTab('profile')}>
-							{initials(boot.user.full_name ||
-            boot.user.username ||
-            String(boot.user.id))}
+							<img className='h-full w-full object-cover' src={currentUserAvatar} alt={currentUserName} referrerPolicy='no-referrer'/>
 						</button>
 					</div>
 				</header>
 
 				{tab === 'home' ? (<main className='space-y-4'>
 						<section className='glass-panel overflow-hidden rounded-[24px]'>
-							<div className='relative min-h-[280px] bg-cover bg-center' style={featured?.preview_url
-                ? {
-                    backgroundImage: `linear-gradient(180deg, rgba(6,9,15,0.2), rgba(6,9,15,0.9)), url(${featured.preview_url})`,
-                }
-                : undefined}>
-								{!featured?.preview_url ? (<div className='absolute inset-0 bg-gradient-to-br from-accent-purple/35 to-accent/20'/>) : null}
+							<div className='relative min-h-[280px] bg-cover bg-center' style={featuredHeroStyle}>
+								{!featuredHeroStyle ? (<div className='absolute inset-0 bg-gradient-to-br from-accent-purple/35 to-accent/20'/>) : null}
 								<div className='relative flex min-h-[280px] flex-col justify-end p-4'>
 									<p className='text-[10px] uppercase tracking-[0.2em] text-white/70'>
 										Tanlangan
@@ -724,10 +744,21 @@ export default function App() {
 					</main>) : null}
 				{tab === 'profile' ? (<main className='space-y-3'>
 						<div className='glass-panel rounded-xl p-4'>
-							<h3 className='section-title'>
-								<User size={15}/> Profil
-							</h3>
-							<p className='mt-2 text-sm text-white/75'>
+							<div className='flex items-center gap-4'>
+								<div className='h-20 w-20 overflow-hidden rounded-[24px] border border-white/15 bg-white/10 shadow-[0_12px_30px_rgba(0,0,0,0.25)]'>
+									<img className='h-full w-full object-cover' src={currentUserAvatar} alt={currentUserName} referrerPolicy='no-referrer'/>
+								</div>
+								<div className='min-w-0 flex-1'>
+									<h3 className='section-title'>
+										<User size={15}/> Profil
+									</h3>
+									<p className='mt-2 truncate text-lg font-semibold'>{currentUserName}</p>
+									<p className='text-xs text-white/60'>
+										{boot.user.username ? `@${boot.user.username}` : 'Telegram foydalanuvchi'}
+									</p>
+								</div>
+							</div>
+							<p className='mt-4 text-sm text-white/75'>
 								ID: {boot.user.id}
 								<br />
 								PRO: {boot.user.is_pro ? 'Faol' : 'Faol emas'}
@@ -1055,7 +1086,7 @@ export default function App() {
 									<X size={14}/>
 								</button>
 								<div className='h-[42vh]'>
-									<Media item={detail}/>
+									<Media item={detail} autoPlay={true}/>
 								</div>
 								<div className='space-y-3 p-4'>
 									<h3 className='text-2xl font-semibold'>{detail.title}</h3>
@@ -1103,7 +1134,7 @@ export default function App() {
 			</div>
 			<nav className='fixed bottom-4 left-1/2 z-40 w-[calc(100%-16px)] max-w-[470px] -translate-x-1/2 px-2'>
 				<div className='glass-panel rounded-[26px] px-2 py-2'>
-					<div className='flex items-center justify-between gap-1'>
+					<div className='flex items-center justify-around gap-1'>
 						{primary.map(item => {
             const Icon = item.icon;
             return (<button key={item.key} className={cls('dock-item', tab === item.key && 'dock-item-active')} onClick={() => setTab(item.key)}>
@@ -1111,10 +1142,6 @@ export default function App() {
 									<span>{item.label}</span>
 								</button>);
         })}
-						<button className={cls('dock-item', (menuOpen || secondaryActive) && 'dock-item-active')} onClick={() => setMenuOpen(current => !current)}>
-							<Menu size={16}/>
-							<span>Menyu</span>
-						</button>
 					</div>
 				</div>
 			</nav>
@@ -1157,3 +1184,5 @@ export default function App() {
 		</div>
 		</ErrorBoundary>);
 }
+
+

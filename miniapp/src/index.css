@@ -29,7 +29,7 @@
   }
 
   .glass-panel {
-    @apply bg-white/[0.04] backdrop-blur-[42px] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.35)];
+    @apply bg-white/[0.04] backdrop-blur-[24px] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.35)];
   }
 
   .btn-primary {
@@ -49,7 +49,7 @@
   }
 
   .avatar-pill {
-    @apply inline-flex items-center justify-center rounded-full bg-white/10 border border-white/15 w-9 h-9 text-xs font-semibold;
+    @apply inline-flex items-center justify-center overflow-hidden rounded-full bg-white/10 border border-white/15 w-9 h-9 text-xs font-semibold p-0;
   }
 
   .chip {
@@ -130,3 +130,8 @@
 .aspect-video-yt {
   aspect-ratio: 16 / 9;
 }
+
+  .avatar-pill img {
+    @apply h-full w-full object-cover;
+  }
+

@@ -279,6 +279,99 @@ async def resolve_ad_channel_create(channel_input: str) -> dict[str, Any]:
     return result
 
 
+def normalize_media_url(raw: str, handler: BaseHTTPRequestHandler) -> str:
+    url = str(raw or "").strip()
+    if not url:
+        return ""
+    if url.startswith(("cdn://", "cdn:")):
+        base = str(os.getenv("MEDIA_CDN_BASE") or "").strip().rstrip("/")
+        path = url.split(":", 1)[1].lstrip("/")
+        return f"{base}/{path}" if base else path
+    if url.startswith(("http://", "https://")):
+        return url
+    if url.startswith("/"):
+        return absolute_url(handler, url)
+    return url
+
+
+def parse_media_sources(raw: Any, handler: BaseHTTPRequestHandler) -> list[dict[str, str]]:
+    if isinstance(raw, list):
+        result = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or item.get("quality") or "auto")
+            url = normalize_media_url(str(item.get("url") or item.get("src") or ""), handler)
+            if url:
+                result.append({"label": label, "url": url})
+        return result
+    if isinstance(raw, dict):
+        sources = raw.get("sources")
+        if isinstance(sources, list):
+            return parse_media_sources(sources, handler)
+        result = []
+        for key, value in raw.items():
+            url = normalize_media_url(str(value or ""), handler)
+            if url:
+                result.append({"label": str(key), "url": url})
+        return result
+
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if "{q}" in text or "{quality}" in text:
+        qualities = []
+        for raw_q in str(os.getenv("MEDIA_QUALITIES") or "360,480,720").split(","):
+            raw_q = raw_q.strip()
+            if raw_q.isdigit():
+                qualities.append(raw_q)
+        result = []
+        for q in qualities or ["360", "480", "720"]:
+            url = text.replace("{q}", q).replace("{quality}", q)
+            url = normalize_media_url(url, handler)
+            if url:
+                result.append({"label": f"{q}p", "url": url})
+        return result
+    if text[:1] in {"{", "["}:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            return parse_media_sources(payload, handler)
+    if "=" in text:
+        result = []
+        for part in re.split(r"[|\n]+", text):
+            if "=" not in part:
+                continue
+            label, url_raw = part.split("=", 1)
+            url = normalize_media_url(url_raw, handler)
+            if url:
+                result.append({"label": label.strip(), "url": url})
+        return result
+    return []
+
+
+def default_media_sources(media_type: str, file_id: str, handler: BaseHTTPRequestHandler) -> list[dict[str, str]]:
+    if not file_id:
+        return []
+    if file_id.startswith(("http://", "https://", "cdn://", "cdn:", "/")):
+        url = normalize_media_url(file_id, handler)
+        return [{"label": "auto", "url": url}] if url else []
+    if media_type in {"video", "animation", "document", "file_id"}:
+        return [{"label": "auto", "url": f"/api/telegram-file?file_id={urllib.parse.quote(file_id)}"}]
+    return []
+
+
+def pick_default_media_url(sources: list[dict[str, str]]) -> str:
+    if not sources:
+        return ""
+    def score(label: str) -> int:
+        match = re.search(r"(\\d+)", label)
+        return int(match.group(1)) if match else 0
+    return sorted(sources, key=lambda item: score(str(item.get("label") or "")), reverse=True)[0].get("url") or ""
+
+
 def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     content_type = str(item.get("content_type") or "").strip()
     content_ref = str(item.get("id") or item.get("content_ref") or "").strip()
@@ -296,8 +389,8 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
     preview_url = ""
     if preview:
         preview_kind, preview_file_id = preview
-        if preview_file_id.startswith(("http://", "https://")):
-            preview_url = preview_file_id
+        if preview_file_id.startswith(("http://", "https://", "cdn://", "cdn:", "/")):
+            preview_url = normalize_media_url(preview_file_id, handler)
         else:
             preview_url = f"/api/telegram-file?file_id={urllib.parse.quote(preview_file_id)}"
 
@@ -305,18 +398,18 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
     if content_type == "serial" and content_ref:
         episodes_count = len(bot_main.db.list_serial_episodes(content_ref))
 
-    media_url = ""
-    if file_id:
-        if file_id.startswith(("http://", "https://")):
-            media_url = file_id
-        elif media_type in {"video", "animation", "document"}:
-            media_url = f"/api/telegram-file?file_id={urllib.parse.quote(file_id)}"
+    raw_sources = item.get("stream_sources") or item.get("media_sources") or file_id
+    media_sources = parse_media_sources(raw_sources, handler)
+    if not media_sources:
+        media_sources = default_media_sources(media_type, file_id, handler)
+    media_url = pick_default_media_url(media_sources)
 
     return {
         "id": content_ref,
         "content_type": content_type,
         "media_type": media_type,
         "media_url": media_url,
+        "media_sources": media_sources,
         "code": str(item.get("code") or ""),
         "title": str(item.get("title") or ""),
         "description": str(item.get("description") or ""),
@@ -610,12 +703,23 @@ class AppHandler(BaseHTTPRequestHandler):
                 self._write_json(404, {"ok": False, "detail": "Media not found"})
                 return
             range_header = self.headers.get("Range")
+            etag = hashlib.sha1(source_url.encode("utf-8")).hexdigest()
+            if not range_header and self.headers.get("If-None-Match") == f"\"{etag}\"":
+                self.send_response(304)
+                self.send_header("ETag", f"\"{etag}\"")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                return
             request = urllib.request.Request(source_url)
             if range_header:
                 request.add_header("Range", range_header)
             with urllib.request.urlopen(request, timeout=30) as response:
                 status = getattr(response, "status", 200)
                 content_type = response.headers.get_content_type() or "application/octet-stream"
+                if content_type == "application/octet-stream":
+                    guessed = mimetypes.guess_type(source_url)[0]
+                    if guessed:
+                        content_type = guessed
                 content_length = response.headers.get("Content-Length")
                 content_range = response.headers.get("Content-Range")
                 self.send_response(status)
@@ -625,7 +729,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 if content_range:
                     self.send_header("Content-Range", content_range)
                 self.send_header("Accept-Ranges", "bytes")
-                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("ETag", f"\"{etag}\"")
                 self.end_headers()
                 while True:
                     chunk = response.read(256 * 1024)
@@ -696,17 +801,17 @@ class AppHandler(BaseHTTPRequestHandler):
                 for row in bot_main.db.list_serial_episodes(content_ref):
                     media_type = str(row.get("media_type") or "").strip()
                     file_id = str(row.get("file_id") or "").strip()
-                    media_url = ""
-                    if file_id:
-                        if file_id.startswith(("http://", "https://")):
-                            media_url = file_id
-                        elif media_type in {"video", "animation", "document"}:
-                            media_url = f"/api/telegram-file?file_id={urllib.parse.quote(file_id)}"
+                    raw_sources = row.get("stream_sources") or row.get("media_sources") or file_id
+                    media_sources = parse_media_sources(raw_sources, self)
+                    if not media_sources:
+                        media_sources = default_media_sources(media_type, file_id, self)
+                    media_url = pick_default_media_url(media_sources)
                     episodes.append(
                         {
                             "episode_number": int(row.get("episode_number") or 0),
                             "media_type": media_type,
                             "media_url": media_url,
+                            "media_sources": media_sources,
                         }
                     )
                 payload["item"]["episodes"] = episodes

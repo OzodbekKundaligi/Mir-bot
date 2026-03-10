@@ -99,6 +99,24 @@ function userAvatar(user) {
     const name = userDisplayName(user);
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f172a&color=ffffff&bold=true`;
 }
+function qualityScore(label) {
+    const match = String(label || '').match(/(\d+)/);
+    return match ? Number(match[1]) : 0;
+}
+function pickAutoSource(sources) {
+    if (!sources?.length)
+        return null;
+    const sorted = [...sources].sort((a, b) => qualityScore(a.label) - qualityScore(b.label));
+    const connection = navigator.connection;
+    if (connection?.saveData)
+        return sorted[0];
+    const effective = connection?.effectiveType || '';
+    if (effective === 'slow-2g' || effective === '2g')
+        return sorted[0];
+    if (effective === '3g')
+        return sorted[Math.floor((sorted.length - 1) / 2)];
+    return sorted[sorted.length - 1];
+}
 async function api(path, options = {}) {
     const response = await fetch(path, {
         method: options.method || 'GET',
@@ -218,6 +236,8 @@ export default function App() {
     const [tab, setTab] = useState('home');
     const [detail, setDetail] = useState(null);
     const [playerUrl, setPlayerUrl] = useState('');
+    const [playerSources, setPlayerSources] = useState([]);
+    const [playerQuality, setPlayerQuality] = useState('auto');
     const [toast, setToast] = useState('');
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
@@ -250,6 +270,9 @@ export default function App() {
             window.clearTimeout(toastRef.current);
         toastRef.current = window.setTimeout(() => setToast(''), 2400);
     }, []);
+    const handleVideoError = useCallback(() => {
+        notify("Video yuklanmadi. Bot orqali ochib ko'ring.");
+    }, [notify]);
     const loadBoot = useCallback(async (silent = false) => {
         if (!silent)
             setLoading(true);
@@ -331,18 +354,44 @@ export default function App() {
             return next;
         });
     }, [boot?.admin?.ad_channels, boot?.admin?.pending_ads]);
+    const applySources = useCallback((sources) => {
+        const list = Array.isArray(sources) ? sources.filter(item => item?.url) : [];
+        setPlayerSources(list);
+        if (!list.length) {
+            setPlayerUrl('');
+            setPlayerQuality('auto');
+            return;
+        }
+        const preferred = pickAutoSource(list) || list[0];
+        setPlayerUrl(preferred.url);
+        setPlayerQuality(preferred.label || 'auto');
+    }, []);
     useEffect(() => {
         if (!detail) {
             setPlayerUrl('');
+            setPlayerSources([]);
+            setPlayerQuality('auto');
+            return;
+        }
+        if (detail.media_sources?.length) {
+            applySources(detail.media_sources);
             return;
         }
         if (detail.media_url) {
-            setPlayerUrl(detail.media_url);
+            applySources([{ label: 'auto', url: detail.media_url }]);
             return;
         }
-        const firstEpisode = detail.episodes?.find?.(item => item.media_url);
-        setPlayerUrl(firstEpisode?.media_url || '');
-    }, [detail]);
+        const firstEpisode = detail.episodes?.find?.(item => item.media_sources?.length || item.media_url);
+        if (firstEpisode?.media_sources?.length) {
+            applySources(firstEpisode.media_sources);
+            return;
+        }
+        if (firstEpisode?.media_url) {
+            applySources([{ label: 'auto', url: firstEpisode.media_url }]);
+            return;
+        }
+        applySources([]);
+    }, [applySources, detail]);
     const navItems = useMemo(() => {
         const items = [...NAV];
         if (boot?.user?.is_pro || boot?.user?.is_admin)
@@ -1118,7 +1167,7 @@ export default function App() {
 									<X size={14}/>
 								</button>
                                 <div className='h-[42vh] bg-black/40'>
-                                    {playerUrl ? (<video className='h-full w-full object-cover' src={playerUrl} poster={detail.preview_url || ''} controls playsInline preload='metadata'/>) : (<Media item={detail} autoPlay={true}/>)}
+                                    {playerUrl ? (<video key={playerUrl} className='h-full w-full object-cover' src={playerUrl} poster={detail.preview_url || ''} controls playsInline preload='metadata' onError={handleVideoError}/>) : (<Media item={detail} autoPlay={true}/>)}
                                 </div>
 								<div className='space-y-3 p-4'>
 									<h3 className='text-2xl font-semibold'>{detail.title}</h3>
@@ -1150,10 +1199,29 @@ export default function App() {
                                             <ExternalLink size={14}/>
                                         </button>
                                     </div>
+                                    {playerSources.length ? (<div className='mt-2'>
+                                            <p className='mb-2 text-xs uppercase tracking-[0.2em] text-white/60'>Sifat</p>
+                                            <div className='flex flex-wrap gap-2'>
+                                                {playerSources.map(source => (<button key={`${source.label}-${source.url}`} className={cls('chip', source.url === playerUrl && 'chip-active')} onClick={() => {
+                                                        setPlayerUrl(source.url);
+                                                        setPlayerQuality(source.label || 'auto');
+                                                    }}>
+                                                        {source.label || 'auto'}
+                                                    </button>))}
+                                            </div>
+                                        </div>) : null}
                                     {detail.episodes?.length ? (<div className='mt-2'>
                                             <p className='mb-2 text-xs uppercase tracking-[0.2em] text-white/60'>Qismlar</p>
                                             <div className='flex flex-wrap gap-2'>
-                                                {detail.episodes.map(item => (<button key={item.episode_number} className={cls('chip', item.media_url && playerUrl === item.media_url && 'chip-active')} disabled={!item.media_url} onClick={() => item.media_url && setPlayerUrl(item.media_url)}>
+                                                {detail.episodes.map(item => (<button key={item.episode_number} className={cls('chip', (item.media_url && playerUrl === item.media_url) && 'chip-active')} disabled={!item.media_url && !item.media_sources?.length} onClick={() => {
+                                                        if (item.media_sources?.length) {
+                                                            applySources(item.media_sources);
+                                                            return;
+                                                        }
+                                                        if (item.media_url) {
+                                                            applySources([{ label: 'auto', url: item.media_url }]);
+                                                        }
+                                                    }}>
                                                         {item.episode_number}
                                                     </button>))}
                                             </div>

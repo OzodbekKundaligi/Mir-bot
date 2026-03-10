@@ -61,6 +61,7 @@ class Movie:
     description: str
     media_type: str
     file_id: str
+    stream_sources: str | None = None
     year: int | None = None
     quality: str = ""
     genres: list[str] | None = None
@@ -577,6 +578,7 @@ class Database:
             "description": movie.description,
             "media_type": movie.media_type,
             "file_id": movie.file_id,
+            "stream_sources": movie.stream_sources or "",
             "year": movie.year,
             "quality": movie.quality.strip(),
             "quality_norm": self._normalize_quality(movie.quality),
@@ -612,6 +614,7 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "stream_sources": 1,
                 "downloads": 1,
                 "views": 1,
             },
@@ -635,6 +638,7 @@ class Database:
                 "genres": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
+                "stream_sources": 1,
                 "downloads": 1,
                 "views": 1,
             },
@@ -648,6 +652,7 @@ class Database:
         description: str,
         media_type: str,
         file_id: str,
+        stream_sources: str | None = None,
         year: int | None = None,
         quality: str = "",
         genres: list[str] | None = None,
@@ -664,6 +669,7 @@ class Database:
                     "description": description,
                     "media_type": media_type,
                     "file_id": file_id,
+                    "stream_sources": stream_sources or "",
                     "year": year,
                     "quality": cleaned_quality,
                     "quality_norm": self._normalize_quality(cleaned_quality),
@@ -799,6 +805,7 @@ class Database:
         episode_number: int,
         media_type: str,
         file_id: str,
+        stream_sources: str | None = None,
     ) -> bool:
         now = utc_now_iso()
         doc = {
@@ -806,6 +813,7 @@ class Database:
             "episode_number": episode_number,
             "media_type": media_type,
             "file_id": file_id,
+            "stream_sources": stream_sources or "",
             "created_at": now,
         }
         try:
@@ -830,6 +838,7 @@ class Database:
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
+                "stream_sources": 1,
                 "downloads": 1,
                 "views": 1,
             },
@@ -881,7 +890,7 @@ class Database:
     def list_serial_episodes(self, serial_id: str) -> list[dict[str, Any]]:
         cursor = self.serial_episodes.find(
             {"serial_id": serial_id},
-            {"episode_number": 1},
+            {"episode_number": 1, "media_type": 1, "file_id": 1, "stream_sources": 1},
         ).sort("episode_number", ASCENDING)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
 
@@ -898,7 +907,7 @@ class Database:
     def get_serial_episode(self, serial_id: str, episode_number: int) -> dict[str, Any] | None:
         doc = self.serial_episodes.find_one(
             {"serial_id": serial_id, "episode_number": episode_number},
-            {"media_type": 1, "file_id": 1},
+            {"media_type": 1, "file_id": 1, "stream_sources": 1},
         )
         return self._doc_without_object_id(doc)
 
@@ -2017,6 +2026,17 @@ def build_mini_app_open_kb() -> InlineKeyboardMarkup | None:
     )
 
 
+def merge_inline_keyboards(*markups: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    rows: list[list[InlineKeyboardButton]] = []
+    for markup in markups:
+        if not markup or not getattr(markup, "inline_keyboard", None):
+            continue
+        rows.extend(markup.inline_keyboard)
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def build_content_mode_text() -> str:
     mode = db.get_bot_settings()["content_mode"]
     return (
@@ -2850,6 +2870,25 @@ def extract_preview_photo_file_id(message: Message) -> str | None:
     return None
 
 
+def parse_stream_sources_input(text: str) -> str | None:
+    raw = text.strip()
+    if not raw:
+        return None
+    if "{q}" in raw or "{quality}" in raw:
+        return raw
+    if raw[:1] in {"{", "["}:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = None
+        if payload is not None:
+            return raw
+    has_url = any(token in raw for token in ("http://", "https://", "cdn://", "cdn:"))
+    if has_url and ("|" in raw or "\n" in raw or "=" in raw):
+        return raw
+    return None
+
+
 def parse_message_media(message: Message) -> tuple[str, str] | None:
     if message.content_type == ContentType.VIDEO and message.video:
         return "video", message.video.file_id
@@ -2861,6 +2900,9 @@ def parse_message_media(message: Message) -> tuple[str, str] | None:
         return "animation", message.animation.file_id
     if message.text:
         text = message.text.strip()
+        stream_sources = parse_stream_sources_input(text)
+        if stream_sources:
+            return "stream", stream_sources
         if text.startswith("http://") or text.startswith("https://"):
             post_data = parse_telegram_post_link(text)
             if post_data:
@@ -2917,6 +2959,34 @@ async def send_stored_media(
         await message.answer_photo(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
     elif media_type == "animation":
         await message.answer_animation(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
+    elif media_type in {"file_id", "stream"}:
+        if not file_id:
+            await message.answer(final_caption or "Media", reply_markup=reply_markup, protect_content=protect_content)
+            return
+        try:
+            await message.answer_video(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramBadRequest:
+            try:
+                await message.answer_document(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except TelegramBadRequest:
+                await message.answer(
+                    f"{final_caption}\n\nID: {file_id}",
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
     elif media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
@@ -3107,6 +3177,43 @@ async def send_media_to_chat(
             protect_content=protect_content,
         )
         return
+    if media_type in {"file_id", "stream"}:
+        if not file_id:
+            merged = merge_inline_keyboards(build_mini_app_open_kb(), reply_markup)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=final_caption or "Media",
+                reply_markup=merged,
+                protect_content=protect_content,
+            )
+            return
+        try:
+            await bot.send_video(
+                chat_id=chat_id,
+                video=file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramBadRequest:
+            try:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except TelegramBadRequest:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=f"{final_caption}\n\nID: {file_id}".strip(),
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
     if media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
@@ -3227,19 +3334,29 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
     is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", movie["id"]))
-    await send_stored_media(
-        message,
-        media_type=movie["media_type"],
-        file_id=movie["file_id"],
-        caption=caption if caption else None,
-        requester_id=requester_id,
-        reply_markup=build_movie_actions_kb(
-            movie["id"],
-            is_favorite=is_favorite,
-            likes=int(reaction.get("likes") or 0),
-            dislikes=int(reaction.get("dislikes") or 0),
-        ),
+    actions_kb = build_movie_actions_kb(
+        movie["id"],
+        is_favorite=is_favorite,
+        likes=int(reaction.get("likes") or 0),
+        dislikes=int(reaction.get("dislikes") or 0),
     )
+    media_type = str(movie.get("media_type") or "")
+    file_id = str(movie.get("file_id") or "")
+    if media_type == "stream" or not file_id:
+        await message.answer(
+            caption or f"🎬 {movie.get('title') or 'Kino'}",
+            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(), actions_kb),
+            protect_content=content_should_be_protected(requester_id),
+        )
+    else:
+        await send_stored_media(
+            message,
+            media_type=media_type,
+            file_id=file_id,
+            caption=caption if caption else None,
+            requester_id=requester_id,
+            reply_markup=actions_kb,
+        )
     db.increment_movie_views(movie["id"])
     db.increment_movie_downloads(movie["id"])
     return True
@@ -3411,7 +3528,7 @@ async def notify_admins_about_ad(bot: Bot, ad: dict[str, Any]) -> None:
 
 
 async def notify_new_content_to_pro_users(
-    bot: Bot,
+    bot: Bot, 
     content_type: str,
     content_ref: str,
     title: str,
@@ -4820,14 +4937,23 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
 
     caption = build_movie_caption(serial["title"], f"{episode_number}-qism")
     try:
-        await send_stored_media(
-            callback.message,
-            media_type=episode["media_type"],
-            file_id=episode["file_id"],
-            caption=caption if caption else None,
-            requester_id=callback.from_user.id,
-            reply_markup=nav_kb,
-        )
+        media_type = str(episode.get("media_type") or "")
+        file_id = str(episode.get("file_id") or "")
+        if media_type == "stream" or not file_id:
+            await callback.message.answer(
+                caption or f"🎬 {serial.get('title') or 'Serial'}",
+                reply_markup=merge_inline_keyboards(build_mini_app_open_kb(), nav_kb),
+                protect_content=content_should_be_protected(callback.from_user.id),
+            )
+        else:
+            await send_stored_media(
+                callback.message,
+                media_type=media_type,
+                file_id=file_id,
+                caption=caption if caption else None,
+                requester_id=callback.from_user.id,
+                reply_markup=nav_kb,
+            )
         db.increment_serial_downloads(serial_id)
         await callback.answer()
     except (TelegramBadRequest, TelegramForbiddenError, ValueError):
@@ -4941,7 +5067,9 @@ async def add_movie_metadata(message: Message, state: FSMContext) -> None:
     await message.answer(
         "📤 Endi media yuboring:\n"
         "• video / document / photo\n"
-        "• yoki file_id / link matn\n\n"
+        "• yoki file_id / link matn\n"
+        "• yoki sifatlar ro'yxati (360p=URL|480p=URL|720p=URL)\n"
+        "• yoki JSON: {\"360p\":\"URL\",\"480p\":\"URL\",\"720p\":\"URL\"}\n\n"
         "ℹ️ Telegram post link yuborsangiz kanal captioni olinmaydi,\n"
         "siz yozgan caption chiqadi."
     )
@@ -4963,6 +5091,10 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         await message.answer("Noto'g'ri format. Video/document/photo yoki matn yuboring.")
         return
     media_type, file_id = media
+    stream_sources = ""
+    if media_type == "stream":
+        stream_sources = file_id
+        file_id = ""
     preview_photo_file_id = extract_preview_photo_file_id(message)
     preview_media_type = "photo" if preview_photo_file_id else ""
     preview_file_id = preview_photo_file_id or ""
@@ -4974,6 +5106,7 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         description=data.get("description", ""),
         media_type=media_type,
         file_id=file_id,
+        stream_sources=stream_sources,
         year=data.get("year"),
         quality=str(data.get("quality") or ""),
         genres=[str(g) for g in data.get("genres", []) if str(g).strip()],
@@ -5147,6 +5280,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     await message.answer(
         "🎬 Endi 1-qismni yuboring.\n"
         "Video/document/photo yoki file_id/link yuborishingiz mumkin.\n"
+        "Sifatlar uchun: 360p=URL|480p=URL|720p=URL yoki JSON.\n"
         f"Yakunlash uchun: {BTN_SERIAL_DONE}",
         reply_markup=serial_upload_kb(),
     )
@@ -5198,8 +5332,12 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
         )
         return
     media_type, file_id = media
+    stream_sources = ""
+    if media_type == "stream":
+        stream_sources = file_id
+        file_id = ""
 
-    created = db.add_serial_episode(serial_id, next_episode, media_type, file_id)
+    created = db.add_serial_episode(serial_id, next_episode, media_type, file_id, stream_sources=stream_sources)
     if not created:
         await message.answer("⚠️ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
         return
@@ -5496,6 +5634,7 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
             movie_description=current_description,
             movie_media_type=str(movie.get("media_type") or ""),
             movie_file_id=str(movie.get("file_id") or ""),
+            movie_stream_sources=str(movie.get("stream_sources") or ""),
             movie_year=movie.get("year"),
             movie_quality=str(movie.get("quality") or ""),
             movie_genres=[str(g) for g in movie.get("genres", []) if str(g).strip()],
@@ -5630,6 +5769,7 @@ async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
     await state.set_state(EditContentState.waiting_movie_media)
     await message.answer(
         "🎞 Yangi media yuboring (video/document/photo yoki file_id/link).\n"
+        "Sifatlar uchun: 360p=URL|480p=URL|720p=URL yoki JSON.\n"
         "Media o'zgartirilmasin desangiz: -"
     )
 
@@ -5655,6 +5795,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     if text == "-":
         media_type = str(data.get("movie_media_type") or "")
         file_id = str(data.get("movie_file_id") or "")
+        stream_sources = str(data.get("movie_stream_sources") or "")
         preview_media_type = str(data.get("movie_preview_media_type") or "")
         preview_file_id = str(data.get("movie_preview_file_id") or "")
     else:
@@ -5666,6 +5807,10 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
             )
             return
         media_type, file_id = parsed_media
+        stream_sources = ""
+        if media_type == "stream":
+            stream_sources = file_id
+            file_id = ""
         preview_photo_file_id = extract_preview_photo_file_id(message)
         if preview_photo_file_id:
             preview_media_type = "photo"
@@ -5680,7 +5825,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     year = int(year_raw) if isinstance(year_raw, int) else None
     quality = str(data.get("movie_new_quality") or data.get("movie_quality") or "").strip()
     genres = [str(g) for g in data.get("movie_new_genres", data.get("movie_genres", [])) if str(g).strip()]
-    if not title or not media_type or not file_id:
+    if not title or not media_type or (not file_id and not stream_sources and media_type != "stream"):
         await state.clear()
         await message.answer("⚠️ Tahrirlash uchun ma'lumot yetarli emas.", reply_markup=admin_menu_kb())
         return
@@ -5691,6 +5836,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
         description=description,
         media_type=media_type,
         file_id=file_id,
+        stream_sources=stream_sources,
         year=year,
         quality=quality,
         genres=genres,
@@ -5743,13 +5889,17 @@ async def edit_serial_add_episode(message: Message, state: FSMContext) -> None:
         )
         return
     media_type, file_id = media
+    stream_sources = ""
+    if media_type == "stream":
+        stream_sources = file_id
+        file_id = ""
 
     next_episode = int(data.get("next_episode", 1))
-    created = db.add_serial_episode(serial_id, next_episode, media_type, file_id)
+    created = db.add_serial_episode(serial_id, next_episode, media_type, file_id, stream_sources=stream_sources)
     if not created:
         # Parallel update bo'lsa, keyingi bo'sh raqamni hisoblab yana urinib ko'ramiz.
         next_episode = db.get_next_serial_episode_number(serial_id)
-        created = db.add_serial_episode(serial_id, next_episode, media_type, file_id)
+        created = db.add_serial_episode(serial_id, next_episode, media_type, file_id, stream_sources=stream_sources)
     if not created:
         await message.answer("⚠️ Qismni saqlab bo'lmadi, qayta urinib ko'ring.")
         return
@@ -6420,6 +6570,29 @@ async def inline_search(inline_query: InlineQuery) -> None:
 
     items = db.search_content(query=query, limit=30)
     if not items:
+        normalized = normalize_lookup_text(query)
+        tokens = [token for token in normalized.split() if token]
+        digits = "".join(ch for ch in query if ch.isdigit())
+        fallback_queries = []
+        if digits and digits != query:
+            fallback_queries.append(digits)
+        fallback_queries.extend([token for token in tokens if token != normalized])
+        seen_keys: set[str] = set()
+        fallback_items: list[dict[str, Any]] = []
+        for token in fallback_queries:
+            for row in db.search_content(query=token, limit=30):
+                content_type = str(row.get("content_type") or "")
+                content_id = str(row.get("id") or "")
+                key = f"{content_type}:{content_id}"
+                if not content_type or not content_id or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                fallback_items.append(row)
+            if len(fallback_items) >= 10:
+                break
+        if fallback_items:
+            items = fallback_items
+    if not items:
         await inline_query.answer(
             [],
             is_personal=True,
@@ -6793,4 +6966,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

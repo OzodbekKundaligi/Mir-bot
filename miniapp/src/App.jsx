@@ -217,6 +217,7 @@ export default function App() {
     const [boot, setBoot] = useState(null);
     const [tab, setTab] = useState('home');
     const [detail, setDetail] = useState(null);
+    const [playerUrl, setPlayerUrl] = useState('');
     const [toast, setToast] = useState('');
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
@@ -255,6 +256,10 @@ export default function App() {
         setError('');
         try {
             const payload = await api('/api/bootstrap');
+            try {
+                localStorage.setItem('miniapp_boot', JSON.stringify(payload));
+            }
+            catch (_) { }
             setBoot(current => {
                 const prev = current?.notice?.updated_at || '';
                 const next = payload?.notice?.updated_at || '';
@@ -278,7 +283,16 @@ export default function App() {
             tg?.setBackgroundColor?.('#0b101b');
         }
         catch (_) { }
-        void loadBoot();
+        let cached = null;
+        try {
+            cached = JSON.parse(localStorage.getItem('miniapp_boot') || 'null');
+        }
+        catch (_) { }
+        if (cached) {
+            setBoot(cached);
+            setLoading(false);
+        }
+        void loadBoot(true);
     }, [loadBoot]);
     useEffect(() => {
         const t = window.setInterval(() => {
@@ -317,6 +331,18 @@ export default function App() {
             return next;
         });
     }, [boot?.admin?.ad_channels, boot?.admin?.pending_ads]);
+    useEffect(() => {
+        if (!detail) {
+            setPlayerUrl('');
+            return;
+        }
+        if (detail.media_url) {
+            setPlayerUrl(detail.media_url);
+            return;
+        }
+        const firstEpisode = detail.episodes?.find?.(item => item.media_url);
+        setPlayerUrl(firstEpisode?.media_url || '');
+    }, [detail]);
     const navItems = useMemo(() => {
         const items = [...NAV];
         if (boot?.user?.is_pro || boot?.user?.is_admin)
@@ -359,11 +385,17 @@ export default function App() {
         setMenuOpen(false);
     }, [tab]);
     const withBusy = useCallback(async (job) => {
-        setBusy(true);
+        let active = true;
+        const timer = window.setTimeout(() => {
+            if (active)
+                setBusy(true);
+        }, 350);
         try {
             await job();
         }
         finally {
+            active = false;
+            window.clearTimeout(timer);
             setBusy(false);
         }
     }, []);
@@ -1085,9 +1117,9 @@ export default function App() {
 								<button className='icon-pill absolute right-4 top-4 z-10' onClick={() => setDetail(null)}>
 									<X size={14}/>
 								</button>
-								<div className='h-[42vh]'>
-									<Media item={detail} autoPlay={true}/>
-								</div>
+                                <div className='h-[42vh] bg-black/40'>
+                                    {playerUrl ? (<video className='h-full w-full object-cover' src={playerUrl} poster={detail.preview_url || ''} controls playsInline preload='metadata'/>) : (<Media item={detail} autoPlay={true}/>)}
+                                </div>
 								<div className='space-y-3 p-4'>
 									<h3 className='text-2xl font-semibold'>{detail.title}</h3>
 									<p className='text-sm text-white/75'>
@@ -1107,17 +1139,25 @@ export default function App() {
 											Yoqmadi: {compact(detail.dislikes)}
 										</div>
 									</div>
-									<div className='flex gap-2'>
-										<button className='btn-primary' onClick={() => openInBot(detail)}>
-											<Play size={14}/> Botda davom etish
-										</button>
+                                    <div className='flex gap-2'>
+                                        <button className='btn-primary' onClick={() => openInBot(detail)}>
+                                            <Play size={14}/> Botda davom etish
+                                        </button>
 										<button className='btn-soft' onClick={() => void toggleFavorite(detail)}>
 											<Heart size={14} fill={detail.is_favorite ? 'currentColor' : 'none'}/>
 										</button>
-										<button className='btn-soft' onClick={() => copyText(detail.deep_link || detail.code || detail.title)}>
-											<ExternalLink size={14}/>
-										</button>
-									</div>
+                                        <button className='btn-soft' onClick={() => copyText(detail.deep_link || detail.code || detail.title)}>
+                                            <ExternalLink size={14}/>
+                                        </button>
+                                    </div>
+                                    {detail.episodes?.length ? (<div className='mt-2'>
+                                            <p className='mb-2 text-xs uppercase tracking-[0.2em] text-white/60'>Qismlar</p>
+                                            <div className='flex flex-wrap gap-2'>
+                                                {detail.episodes.map(item => (<button key={item.episode_number} className={cls('chip', item.media_url && playerUrl === item.media_url && 'chip-active')} disabled={!item.media_url} onClick={() => item.media_url && setPlayerUrl(item.media_url)}>
+                                                        {item.episode_number}
+                                                    </button>))}
+                                            </div>
+                                        </div>) : null}
 									<div className='flex gap-2'>
 										<button className={cls('btn-soft flex-1', detail.user_reaction === 'like' && 'btn-soft-active')} onClick={() => void reactItem(detail, 'like')}>
 											<ThumbsUp size={14}/> {compact(detail.likes)}

@@ -282,6 +282,8 @@ async def resolve_ad_channel_create(channel_input: str) -> dict[str, Any]:
 def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     content_type = str(item.get("content_type") or "").strip()
     content_ref = str(item.get("id") or item.get("content_ref") or "").strip()
+    media_type = str(item.get("media_type") or "").strip()
+    file_id = str(item.get("file_id") or "").strip()
     reaction = bot_main.db.get_reaction_summary(content_type, content_ref)
     bot_username = resolve_bot_username()
     start_payload = f"m_{content_ref}" if content_type == "movie" else f"s_{content_ref}"
@@ -303,9 +305,18 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
     if content_type == "serial" and content_ref:
         episodes_count = len(bot_main.db.list_serial_episodes(content_ref))
 
+    media_url = ""
+    if file_id:
+        if file_id.startswith(("http://", "https://")):
+            media_url = file_id
+        elif media_type in {"video", "animation", "document"}:
+            media_url = f"/api/telegram-file?file_id={urllib.parse.quote(file_id)}"
+
     return {
         "id": content_ref,
         "content_type": content_type,
+        "media_type": media_type,
+        "media_url": media_url,
         "code": str(item.get("code") or ""),
         "title": str(item.get("title") or ""),
         "description": str(item.get("description") or ""),
@@ -594,24 +605,33 @@ class AppHandler(BaseHTTPRequestHandler):
             self._write_json(400, {"ok": False, "detail": "file_id required"})
             return
         try:
-            if file_id.startswith(("http://", "https://")):
-                with urllib.request.urlopen(file_id, timeout=20) as response:
-                    body = response.read()
-                    content_type = response.headers.get_content_type() or "application/octet-stream"
-            else:
-                source_url = resolve_telegram_file_url(file_id)
-                if not source_url:
-                    self._write_json(404, {"ok": False, "detail": "Media not found"})
-                    return
-                with urllib.request.urlopen(source_url, timeout=30) as response:
-                    body = response.read()
-                    content_type = response.headers.get_content_type() or "application/octet-stream"
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "public, max-age=3600")
-            self.end_headers()
-            self.wfile.write(body)
+            source_url = file_id if file_id.startswith(("http://", "https://")) else resolve_telegram_file_url(file_id)
+            if not source_url:
+                self._write_json(404, {"ok": False, "detail": "Media not found"})
+                return
+            range_header = self.headers.get("Range")
+            request = urllib.request.Request(source_url)
+            if range_header:
+                request.add_header("Range", range_header)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status = getattr(response, "status", 200)
+                content_type = response.headers.get_content_type() or "application/octet-stream"
+                content_length = response.headers.get("Content-Length")
+                content_range = response.headers.get("Content-Range")
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                if content_length:
+                    self.send_header("Content-Length", str(content_length))
+                if content_range:
+                    self.send_header("Content-Range", content_range)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         except Exception as exc:
             self._write_json(502, {"ok": False, "detail": f"Media proxy error: {exc}"})
 
@@ -672,10 +692,24 @@ class AppHandler(BaseHTTPRequestHandler):
                 return
             payload = {"ok": True, "item": serialize_content_item(item, int(user["id"]), self)}
             if content_type == "serial":
-                payload["item"]["episodes"] = [
-                    {"episode_number": int(row.get("episode_number") or 0)}
-                    for row in bot_main.db.list_serial_episodes(content_ref)
-                ]
+                episodes = []
+                for row in bot_main.db.list_serial_episodes(content_ref):
+                    media_type = str(row.get("media_type") or "").strip()
+                    file_id = str(row.get("file_id") or "").strip()
+                    media_url = ""
+                    if file_id:
+                        if file_id.startswith(("http://", "https://")):
+                            media_url = file_id
+                        elif media_type in {"video", "animation", "document"}:
+                            media_url = f"/api/telegram-file?file_id={urllib.parse.quote(file_id)}"
+                    episodes.append(
+                        {
+                            "episode_number": int(row.get("episode_number") or 0),
+                            "media_type": media_type,
+                            "media_url": media_url,
+                        }
+                    )
+                payload["item"]["episodes"] = episodes
             self._write_json(200, payload)
             return
         if path == "/api/ads/mine":

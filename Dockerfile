@@ -2,7 +2,7 @@ FROM node:20-alpine AS miniapp-build
 
 WORKDIR /miniapp
 COPY miniapp/package*.json ./
-RUN npm ci
+RUN npm install --no-audit --no-fund
 COPY miniapp ./
 RUN npm run build
 

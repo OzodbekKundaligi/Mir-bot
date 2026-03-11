@@ -62,6 +62,7 @@ class Movie:
     media_type: str
     file_id: str
     stream_sources: str | None = None
+    visibility: str = "public"
     year: int | None = None
     quality: str = ""
     genres: list[str] | None = None
@@ -120,6 +121,13 @@ class Database:
     @staticmethod
     def _normalize_quality(value: str | None) -> str:
         return re.sub(r"\s+", "", (value or "").strip().lower())
+
+    @staticmethod
+    def _normalize_visibility(value: str | None) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"pro", "admin"}:
+            return raw
+        return "public"
 
     @classmethod
     def _title_matches_query(cls, title: str, description: str, query: str) -> bool:
@@ -579,6 +587,7 @@ class Database:
             "media_type": movie.media_type,
             "file_id": movie.file_id,
             "stream_sources": movie.stream_sources or "",
+            "visibility": self._normalize_visibility(movie.visibility),
             "year": movie.year,
             "quality": movie.quality.strip(),
             "quality_norm": self._normalize_quality(movie.quality),
@@ -609,6 +618,7 @@ class Database:
                 "description": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "visibility": 1,
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
@@ -633,6 +643,7 @@ class Database:
                 "description": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "visibility": 1,
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
@@ -653,6 +664,7 @@ class Database:
         media_type: str,
         file_id: str,
         stream_sources: str | None = None,
+        visibility: str = "public",
         year: int | None = None,
         quality: str = "",
         genres: list[str] | None = None,
@@ -670,6 +682,7 @@ class Database:
                     "media_type": media_type,
                     "file_id": file_id,
                     "stream_sources": stream_sources or "",
+                    "visibility": self._normalize_visibility(visibility),
                     "year": year,
                     "quality": cleaned_quality,
                     "quality_norm": self._normalize_quality(cleaned_quality),
@@ -765,6 +778,7 @@ class Database:
         year: int | None = None,
         quality: str = "",
         genres: list[str] | None = None,
+        visibility: str = "public",
     ) -> str | None:
         now = utc_now_iso()
         cleaned_quality = quality.strip()
@@ -777,6 +791,7 @@ class Database:
             "quality": cleaned_quality,
             "quality_norm": self._normalize_quality(cleaned_quality),
             "genres": cleaned_genres,
+            "visibility": self._normalize_visibility(visibility),
             "title_norm": self._normalize_lookup(title),
             "preview_media_type": "",
             "preview_file_id": "",
@@ -835,6 +850,7 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "visibility": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
@@ -855,6 +871,7 @@ class Database:
                 "year": 1,
                 "quality": 1,
                 "genres": 1,
+                "visibility": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
@@ -1368,6 +1385,7 @@ class Database:
                 "genres": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "visibility": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
@@ -1388,6 +1406,7 @@ class Database:
                 "genres": 1,
                 "media_type": 1,
                 "file_id": 1,
+                "visibility": 1,
                 "preview_media_type": 1,
                 "preview_file_id": 1,
                 "preview_photo_file_id": 1,
@@ -2015,8 +2034,21 @@ def get_mini_app_launch_url() -> str:
     return get_mini_app_url()
 
 
-def build_mini_app_open_kb() -> InlineKeyboardMarkup | None:
-    launch_url = get_mini_app_launch_url()
+def get_mini_app_launch_url_with_payload(payload: str | None) -> str:
+    base = get_mini_app_launch_url()
+    if not base or not payload:
+        return base
+    if "startapp=" in base:
+        if base.endswith("="):
+            return f"{base}{payload}"
+        if base.endswith(payload) or base.endswith(f"_{payload}"):
+            return base
+        return f"{base}_{payload}"
+    return base
+
+
+def build_mini_app_open_kb(payload: str | None = None) -> InlineKeyboardMarkup | None:
+    launch_url = get_mini_app_launch_url_with_payload(payload)
     if not launch_url:
         return None
     return InlineKeyboardMarkup(
@@ -2045,6 +2077,17 @@ def build_content_mode_text() -> str:
         "🔒 Yopiq — yuklash va jo'natish yopiq\n"
         "🌐 Ochiq — hammasi ochiq"
     )
+
+
+def is_content_visible_for_user(row: dict[str, Any] | None, user_id: int | None) -> bool:
+    visibility = str((row or {}).get("visibility") or "public").lower()
+    if visibility == "public":
+        return True
+    if visibility == "pro":
+        return bool(user_id and (db.is_pro_active(user_id) or db.is_admin(user_id)))
+    if visibility == "admin":
+        return bool(user_id and db.is_admin(user_id))
+    return True
 
 
 def build_content_mode_kb(mode: str | None = None) -> InlineKeyboardMarkup:
@@ -2345,13 +2388,14 @@ def parse_metadata_input(value: str) -> dict[str, Any] | None:
     if not raw:
         return None
     if raw == "-":
-        return {"year": None, "quality": "", "genres": []}
+        return {"year": None, "quality": "", "genres": [], "visibility": "public"}
 
     parts = [part.strip() for part in raw.split("|")]
-    if len(parts) != 3:
+    if len(parts) not in {3, 4}:
         return None
 
-    year_part, quality_part, genres_part = parts
+    year_part, quality_part, genres_part = parts[:3]
+    visibility_part = parts[3] if len(parts) == 4 else ""
     year: int | None = None
     if year_part and year_part != "-":
         if not year_part.isdigit():
@@ -2370,7 +2414,8 @@ def parse_metadata_input(value: str) -> dict[str, Any] | None:
         genres = [genre.strip().lower() for genre in genres_part.split(",") if genre.strip()]
         genres = sorted(dict.fromkeys(genres))[:10]
 
-    return {"year": year, "quality": quality, "genres": genres}
+    visibility = Database._normalize_visibility(visibility_part)
+    return {"year": year, "quality": quality, "genres": genres, "visibility": visibility}
 
 
 def encode_payload_value(value: str) -> str:
@@ -3080,6 +3125,9 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
     if not serial:
         await message.answer("❌ Serial topilmadi.")
         return False
+    if not is_content_visible_for_user(serial, user_id):
+        await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
+        return False
 
     episodes = db.list_serial_episodes(serial_id)
     if not episodes:
@@ -3320,6 +3368,9 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if not movie:
         await message.answer("❌ Kino topilmadi.")
         return False
+    if not is_content_visible_for_user(movie, user_id):
+        await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
+        return False
     displayed_views = int(movie.get("views") or 0) + 1
     reaction = db.get_reaction_summary("movie", movie["id"])
     caption = append_meta_to_caption(
@@ -3345,7 +3396,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if media_type == "stream" or not file_id:
         await message.answer(
             caption or f"🎬 {movie.get('title') or 'Kino'}",
-            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(), actions_kb),
+            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or ''}"), actions_kb),
             protect_content=content_should_be_protected(requester_id),
         )
     else:
@@ -4942,7 +4993,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
         if media_type == "stream" or not file_id:
             await callback.message.answer(
                 caption or f"🎬 {serial.get('title') or 'Serial'}",
-                reply_markup=merge_inline_keyboards(build_mini_app_open_kb(), nav_kb),
+                reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"s_{serial_id}"), nav_kb),
                 protect_content=content_should_be_protected(callback.from_user.id),
             )
         else:
@@ -5032,8 +5083,9 @@ async def add_movie_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=description)
     await state.set_state(AddMovieState.waiting_metadata)
     await message.answer(
-        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
-        "Masalan: 2024|1080p|action,drama\n"
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2|ko'rinish).\n"
+        "Ko'rinish: public/pro/admin (ixtiyoriy).\n"
+        "Masalan: 2024|1080p|action,drama|pro\n"
         "Agar kerak bo'lmasa: -"
     )
 
@@ -5052,8 +5104,8 @@ async def add_movie_metadata(message: Message, state: FSMContext) -> None:
     metadata = parse_metadata_input(text)
     if metadata is None:
         await message.answer(
-            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
-            "Masalan: 2024|1080p|action,drama\n"
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2|ko'rinish\n"
+            "Masalan: 2024|1080p|action,drama|pro\n"
             "Yoki: -"
         )
         return
@@ -5062,6 +5114,7 @@ async def add_movie_metadata(message: Message, state: FSMContext) -> None:
         year=metadata["year"],
         quality=metadata["quality"],
         genres=metadata["genres"],
+        visibility=metadata.get("visibility", "public"),
     )
     await state.set_state(AddMovieState.waiting_media)
     await message.answer(
@@ -5107,6 +5160,7 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
         media_type=media_type,
         file_id=file_id,
         stream_sources=stream_sources,
+        visibility=str(data.get("visibility") or "public"),
         year=data.get("year"),
         quality=str(data.get("quality") or ""),
         genres=[str(g) for g in data.get("genres", []) if str(g).strip()],
@@ -5219,8 +5273,9 @@ async def add_serial_description(message: Message, state: FSMContext) -> None:
     )
     await state.set_state(AddSerialState.waiting_metadata)
     await message.answer(
-        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2).\n"
-        "Masalan: 2024|1080p|action,drama\n"
+        "🏷 Metadata yuboring (format: yil|sifat|janr1,janr2|ko'rinish).\n"
+        "Ko'rinish: public/pro/admin (ixtiyoriy).\n"
+        "Masalan: 2024|1080p|action,drama|pro\n"
         "Agar kerak bo'lmasa: -"
     )
 
@@ -5240,8 +5295,8 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
     metadata = parse_metadata_input(text)
     if metadata is None:
         await message.answer(
-            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
-            "Masalan: 2024|1080p|action,drama\n"
+            "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2|ko'rinish\n"
+            "Masalan: 2024|1080p|action,drama|pro\n"
             "Yoki: -"
         )
         return
@@ -5262,6 +5317,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
         year=metadata["year"],
         quality=metadata["quality"],
         genres=metadata["genres"],
+        visibility=metadata.get("visibility", "public"),
     )
     if serial_id is None:
         await state.clear()
@@ -5272,6 +5328,7 @@ async def add_serial_metadata(message: Message, state: FSMContext) -> None:
         year=metadata["year"],
         quality=metadata["quality"],
         genres=metadata["genres"],
+        visibility=metadata.get("visibility", "public"),
         serial_id=serial_id,
         next_episode=1,
         episodes_added=0,
@@ -5635,6 +5692,7 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
             movie_media_type=str(movie.get("media_type") or ""),
             movie_file_id=str(movie.get("file_id") or ""),
             movie_stream_sources=str(movie.get("stream_sources") or ""),
+            movie_visibility=str(movie.get("visibility") or "public"),
             movie_year=movie.get("year"),
             movie_quality=str(movie.get("quality") or ""),
             movie_genres=[str(g) for g in movie.get("genres", []) if str(g).strip()],
@@ -5723,8 +5781,8 @@ async def edit_movie_description(message: Message, state: FSMContext) -> None:
     await state.update_data(movie_new_description=new_description)
     await state.set_state(EditContentState.waiting_movie_metadata)
     await message.answer(
-        "🏷 Yangi metadata yuboring (format: yil|sifat|janr1,janr2).\n"
-        "Masalan: 2024|1080p|action,drama\n"
+        "🏷 Yangi metadata yuboring (format: yil|sifat|janr1,janr2|ko'rinish).\n"
+        "Masalan: 2024|1080p|action,drama|pro\n"
         "O'zgartirmaslik uchun: -"
     )
 
@@ -5743,28 +5801,32 @@ async def edit_movie_metadata(message: Message, state: FSMContext) -> None:
     old_year = data.get("movie_year")
     old_quality = str(data.get("movie_quality") or "")
     old_genres = [str(g) for g in data.get("movie_genres", []) if str(g).strip()]
+    old_visibility = str(data.get("movie_visibility") or "public")
 
     if text == "-":
         year = old_year if isinstance(old_year, int) else None
         quality = old_quality
         genres = old_genres
+        visibility = old_visibility
     else:
         metadata = parse_metadata_input(text)
         if metadata is None:
             await message.answer(
-                "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2\n"
-                "Masalan: 2024|1080p|action,drama\n"
+                "⚠️ Format noto'g'ri. To'g'ri format: yil|sifat|janr1,janr2|ko'rinish\n"
+                "Masalan: 2024|1080p|action,drama|pro\n"
                 "Yoki: -"
             )
             return
         year = metadata["year"]
         quality = metadata["quality"]
         genres = metadata["genres"]
+        visibility = metadata.get("visibility", "public")
 
     await state.update_data(
         movie_new_year=year,
         movie_new_quality=quality,
         movie_new_genres=genres,
+        movie_new_visibility=visibility,
     )
     await state.set_state(EditContentState.waiting_movie_media)
     await message.answer(
@@ -5825,6 +5887,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
     year = int(year_raw) if isinstance(year_raw, int) else None
     quality = str(data.get("movie_new_quality") or data.get("movie_quality") or "").strip()
     genres = [str(g) for g in data.get("movie_new_genres", data.get("movie_genres", [])) if str(g).strip()]
+    visibility = str(data.get("movie_new_visibility") or data.get("movie_visibility") or "public")
     if not title or not media_type or (not file_id and not stream_sources and media_type != "stream"):
         await state.clear()
         await message.answer("⚠️ Tahrirlash uchun ma'lumot yetarli emas.", reply_markup=admin_menu_kb())
@@ -5837,6 +5900,7 @@ async def edit_movie_media(message: Message, state: FSMContext) -> None:
         media_type=media_type,
         file_id=file_id,
         stream_sources=stream_sources,
+        visibility=visibility,
         year=year,
         quality=quality,
         genres=genres,
@@ -6214,7 +6278,7 @@ async def requests_dashboard(message: Message) -> None:
 
     lines.append("")
     lines.append("✅ Oxirgi yopilganlar:")
-    if fulfilled_topics:
+    if fulfilled_topicds:
         for row in fulfilled_topics:
             req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
             query = str(row.get("query_text") or row.get("normalized_query") or "-")
@@ -6609,6 +6673,8 @@ async def inline_search(inline_query: InlineQuery) -> None:
         content_id = str(item.get("id") or "")
         if content_type not in {"movie", "serial"} or not content_id:
             continue
+        if not is_content_visible_for_user(item, inline_query.from_user.id):
+            continue
         result_key = f"{content_type}:{content_id}"
         if result_key in seen_result_keys:
             continue
@@ -6634,9 +6700,11 @@ async def inline_search(inline_query: InlineQuery) -> None:
         content_text = f"{content_text}\n\nBotda ochish: {deeplink}"
 
         result_id = hashlib.sha1(f"{content_type}:{content_id}:{query}".encode("utf-8")).hexdigest()[:32]
-        reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
-        )
+        inline_rows = [[InlineKeyboardButton(text="📥 Botda ochish", url=deeplink)]]
+        miniapp_url = get_mini_app_launch_url_with_payload(payload)
+        if miniapp_url:
+            inline_rows.append([InlineKeyboardButton(text="🌐 Mini App", url=miniapp_url)])
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_rows)
         preview = resolve_inline_media_preview(item)
         if not preview and content_type == "serial":
             preview = db.get_serial_inline_media_preview(content_id)

@@ -99,6 +99,14 @@ function userAvatar(user) {
     const name = userDisplayName(user);
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f172a&color=ffffff&bold=true`;
 }
+function isNewItem(item) {
+    if (!item?.created_at)
+        return false;
+    const ts = new Date(item.created_at).getTime();
+    if (Number.isNaN(ts))
+        return false;
+    return Date.now() - ts <= 1000 * 60 * 60 * 48;
+}
 function qualityScore(label) {
     const match = String(label || '').match(/(\d+)/);
     return match ? Number(match[1]) : 0;
@@ -201,6 +209,8 @@ function Card({ item, onOpen, onFav, onReact, }) {
 					<span className='glass-pill'>
 						* {Number(item.rating || 0).toFixed(1)}
 					</span>
+                    {isNewItem(item) ? (<span className='glass-pill bg-accent/30 text-accent'>NEW</span>) : null}
+                    {item.visibility && item.visibility !== 'public' ? (<span className='glass-pill bg-white/10 uppercase'>{item.visibility}</span>) : null}
 				</div>
 			</button>
 			<div className='space-y-2 p-3'>
@@ -238,6 +248,7 @@ export default function App() {
     const [playerUrl, setPlayerUrl] = useState('');
     const [playerSources, setPlayerSources] = useState([]);
     const [playerQuality, setPlayerQuality] = useState('auto');
+    const [currentEpisodeIndex, setCurrentEpisodeIndex] = useState(0);
     const [toast, setToast] = useState('');
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
@@ -264,6 +275,9 @@ export default function App() {
     const [adminSearchLoading, setAdminSearchLoading] = useState(false);
     const [adChannelMap, setAdChannelMap] = useState({});
     const toastRef = useRef();
+    const videoRef = useRef(null);
+    const hlsRef = useRef(null);
+    const lastSaveRef = useRef(0);
     const notify = useCallback((message) => {
         setToast(message);
         if (toastRef.current)
@@ -273,6 +287,24 @@ export default function App() {
     const handleVideoError = useCallback(() => {
         notify("Video yuklanmadi. Bot orqali ochib ko'ring.");
     }, [notify]);
+    const handlePip = useCallback(() => {
+        const video = videoRef.current;
+        if (!video || !document.pictureInPictureEnabled) {
+            notify("PIP mavjud emas");
+            return;
+        }
+        video.requestPictureInPicture?.().catch(() => notify("PIP ishga tushmadi"));
+    }, [notify]);
+    const playbackKey = useMemo(() => {
+        if (!detail)
+            return '';
+        if (detail.episodes?.length) {
+            const episode = detail.episodes[currentEpisodeIndex];
+            if (episode?.episode_number)
+                return `${detail.content_type}:${detail.id}:ep:${episode.episode_number}`;
+        }
+        return `${detail.content_type}:${detail.id}:movie`;
+    }, [detail, currentEpisodeIndex]);
     const loadBoot = useCallback(async (silent = false) => {
         if (!silent)
             setLoading(true);
@@ -366,11 +398,24 @@ export default function App() {
         setPlayerUrl(preferred.url);
         setPlayerQuality(preferred.label || 'auto');
     }, []);
+    const playEpisode = useCallback((episode, index) => {
+        if (!episode)
+            return;
+        setCurrentEpisodeIndex(index);
+        if (episode.media_sources?.length) {
+            applySources(episode.media_sources);
+            return;
+        }
+        if (episode.media_url) {
+            applySources([{ label: 'auto', url: episode.media_url }]);
+        }
+    }, [applySources]);
     useEffect(() => {
         if (!detail) {
             setPlayerUrl('');
             setPlayerSources([]);
             setPlayerQuality('auto');
+            setCurrentEpisodeIndex(0);
             return;
         }
         if (detail.media_sources?.length) {
@@ -381,6 +426,7 @@ export default function App() {
             applySources([{ label: 'auto', url: detail.media_url }]);
             return;
         }
+        setCurrentEpisodeIndex(0);
         const firstEpisode = detail.episodes?.find?.(item => item.media_sources?.length || item.media_url);
         if (firstEpisode?.media_sources?.length) {
             applySources(firstEpisode.media_sources);
@@ -392,6 +438,101 @@ export default function App() {
         }
         applySources([]);
     }, [applySources, detail]);
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video)
+            return;
+        if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+        }
+        if (!playerUrl) {
+            video.removeAttribute('src');
+            video.load();
+            return;
+        }
+        const isHls = playerUrl.includes('.m3u8');
+        if (!isHls) {
+            video.src = playerUrl;
+            return;
+        }
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = playerUrl;
+            return;
+        }
+        let cancelled = false;
+        import('hls.js')
+            .then(module => {
+            if (cancelled)
+                return;
+            const Hls = module.default;
+            if (Hls.isSupported()) {
+                const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+                hls.loadSource(playerUrl);
+                hls.attachMedia(video);
+                hlsRef.current = hls;
+            }
+            else {
+                video.src = playerUrl;
+            }
+        })
+            .catch(() => {
+            video.src = playerUrl;
+        });
+        return () => {
+            cancelled = true;
+            if (hlsRef.current) {
+                hlsRef.current.destroy();
+                hlsRef.current = null;
+            }
+        };
+    }, [playerUrl]);
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video || !playerUrl)
+            return;
+        const handleLoaded = () => {
+            try {
+                const raw = localStorage.getItem('miniapp_playback') || '{}';
+                const saved = JSON.parse(raw);
+                const time = Number(saved?.[playbackKey] || 0);
+                if (time > 5 && time < video.duration) {
+                    video.currentTime = time;
+                }
+            }
+            catch (_) { }
+        };
+        const handleTime = () => {
+            const now = Date.now();
+            if (now - lastSaveRef.current < 5000)
+                return;
+            lastSaveRef.current = now;
+            try {
+                const raw = localStorage.getItem('miniapp_playback') || '{}';
+                const saved = JSON.parse(raw);
+                saved[playbackKey] = Math.floor(video.currentTime || 0);
+                localStorage.setItem('miniapp_playback', JSON.stringify(saved));
+            }
+            catch (_) { }
+        };
+        const handleEnded = () => {
+            if (!detail?.episodes?.length)
+                return;
+            const nextIndex = currentEpisodeIndex + 1;
+            if (nextIndex >= detail.episodes.length)
+                return;
+            const nextEpisode = detail.episodes[nextIndex];
+            playEpisode(nextEpisode, nextIndex);
+        };
+        video.addEventListener('loadedmetadata', handleLoaded);
+        video.addEventListener('timeupdate', handleTime);
+        video.addEventListener('ended', handleEnded);
+        return () => {
+            video.removeEventListener('loadedmetadata', handleLoaded);
+            video.removeEventListener('timeupdate', handleTime);
+            video.removeEventListener('ended', handleEnded);
+        };
+    }, [playerUrl, playbackKey, detail, currentEpisodeIndex, playEpisode]);
     const navItems = useMemo(() => {
         const items = [...NAV];
         if (boot?.user?.is_pro || boot?.user?.is_admin)
@@ -1167,7 +1308,7 @@ export default function App() {
 									<X size={14}/>
 								</button>
                                 <div className='h-[42vh] bg-black/40'>
-                                    {playerUrl ? (<video key={playerUrl} className='h-full w-full object-cover' src={playerUrl} poster={detail.preview_url || ''} controls playsInline preload='metadata' onError={handleVideoError}/>) : (<Media item={detail} autoPlay={true}/>)}
+                                    {playerUrl ? (<video key={playerUrl} ref={videoRef} className='h-full w-full object-cover' src={playerUrl} poster={detail.preview_url || ''} controls playsInline preload='metadata' onError={handleVideoError}/>) : (<Media item={detail} autoPlay={true}/>)}
                                 </div>
 								<div className='space-y-3 p-4'>
 									<h3 className='text-2xl font-semibold'>{detail.title}</h3>
@@ -1198,6 +1339,9 @@ export default function App() {
                                         <button className='btn-soft' onClick={() => copyText(detail.deep_link || detail.code || detail.title)}>
                                             <ExternalLink size={14}/>
                                         </button>
+                                        {playerUrl ? (<button className='btn-soft' onClick={handlePip}>
+                                                <Sparkles size={14}/>
+                                            </button>) : null}
                                     </div>
                                     {playerSources.length ? (<div className='mt-2'>
                                             <p className='mb-2 text-xs uppercase tracking-[0.2em] text-white/60'>Sifat</p>
@@ -1213,15 +1357,7 @@ export default function App() {
                                     {detail.episodes?.length ? (<div className='mt-2'>
                                             <p className='mb-2 text-xs uppercase tracking-[0.2em] text-white/60'>Qismlar</p>
                                             <div className='flex flex-wrap gap-2'>
-                                                {detail.episodes.map(item => (<button key={item.episode_number} className={cls('chip', (item.media_url && playerUrl === item.media_url) && 'chip-active')} disabled={!item.media_url && !item.media_sources?.length} onClick={() => {
-                                                        if (item.media_sources?.length) {
-                                                            applySources(item.media_sources);
-                                                            return;
-                                                        }
-                                                        if (item.media_url) {
-                                                            applySources([{ label: 'auto', url: item.media_url }]);
-                                                        }
-                                                    }}>
+                                                {detail.episodes.map((item, index) => (<button key={item.episode_number} className={cls('chip', index === currentEpisodeIndex && 'chip-active')} disabled={!item.media_url && !item.media_sources?.length} onClick={() => playEpisode(item, index)}>
                                                         {item.episode_number}
                                                     </button>))}
                                             </div>

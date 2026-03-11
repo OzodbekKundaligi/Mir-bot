@@ -352,6 +352,64 @@ def parse_media_sources(raw: Any, handler: BaseHTTPRequestHandler) -> list[dict[
     return []
 
 
+def inspect_media_health(url: str) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "url": url,
+        "ok": False,
+        "status": None,
+        "content_type": "",
+        "content_length": None,
+        "accept_ranges": "",
+        "range_supported": False,
+        "faststart": None,
+        "error": "",
+    }
+    if not url:
+        result["error"] = "URL required"
+        return result
+    try:
+        request = urllib.request.Request(url, method="GET")
+        request.add_header("Range", "bytes=0-524287")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            status = getattr(response, "status", 200)
+            content_type = response.headers.get_content_type() or "application/octet-stream"
+            if content_type == "application/octet-stream":
+                guessed = mimetypes.guess_type(url)[0]
+                if guessed:
+                    content_type = guessed
+            content_length = response.headers.get("Content-Length")
+            accept_ranges = response.headers.get("Accept-Ranges", "")
+            body = response.read(512 * 1024)
+
+        faststart = None
+        if content_type == "video/mp4" or url.lower().endswith(".mp4"):
+            try:
+                moov = body.find(b"moov")
+                mdat = body.find(b"mdat")
+                if moov >= 0 and mdat >= 0:
+                    faststart = moov < mdat
+                else:
+                    faststart = None
+            except Exception:
+                faststart = None
+
+        result.update(
+            {
+                "ok": True,
+                "status": status,
+                "content_type": content_type,
+                "content_length": int(content_length) if content_length and str(content_length).isdigit() else None,
+                "accept_ranges": accept_ranges,
+                "range_supported": (status == 206) or str(accept_ranges).lower() == "bytes",
+                "faststart": faststart,
+            }
+        )
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
+
+
 def default_media_sources(media_type: str, file_id: str, handler: BaseHTTPRequestHandler) -> list[dict[str, str]]:
     if not file_id:
         return []
@@ -410,6 +468,7 @@ def serialize_content_item(item: dict[str, Any], user_id: int, handler: BaseHTTP
         "media_type": media_type,
         "media_url": media_url,
         "media_sources": media_sources,
+        "visibility": str(item.get("visibility") or "public"),
         "code": str(item.get("code") or ""),
         "title": str(item.get("title") or ""),
         "description": str(item.get("description") or ""),
@@ -450,6 +509,17 @@ def load_content(content_type: str, content_ref: str) -> dict[str, Any] | None:
     normalized = dict(row)
     normalized["content_type"] = content_type
     return normalized
+
+
+def is_content_visible(item: dict[str, Any], user_id: int) -> bool:
+    visibility = str(item.get("visibility") or "public").lower()
+    if visibility == "public":
+        return True
+    if visibility == "pro":
+        return bot_main.db.is_pro_active(user_id) or bot_main.db.is_admin(user_id)
+    if visibility == "admin":
+        return bot_main.db.is_admin(user_id)
+    return True
 
 
 def build_recent_movies(limit: int) -> list[dict[str, Any]]:
@@ -519,8 +589,16 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
     if notice.get("link", "").startswith("/"):
         notice["link"] = absolute_url(handler, notice["link"])
 
-    recent_movies = [serialize_content_item(row, user_id, handler) for row in build_recent_movies(10)]
-    recent_serials = [serialize_content_item(row, user_id, handler) for row in build_recent_serials(10)]
+    recent_movies = [
+        serialize_content_item(row, user_id, handler)
+        for row in build_recent_movies(10)
+        if is_content_visible(row, user_id)
+    ]
+    recent_serials = [
+        serialize_content_item(row, user_id, handler)
+        for row in build_recent_serials(10)
+        if is_content_visible(row, user_id)
+    ]
 
     top_viewed: list[dict[str, Any]] = []
     for row in bot_main.db.list_top_viewed_content(limit=10):
@@ -528,6 +606,8 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
         content_ref = str(row.get("id") or "")
         full_row = load_content(content_type, content_ref)
         if not full_row:
+            continue
+        if not is_content_visible(full_row, user_id):
             continue
         top_viewed.append(serialize_content_item(full_row, user_id, handler))
 
@@ -537,6 +617,8 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
         content_ref = str(row.get("content_ref") or "")
         full_row = load_content(content_type, content_ref)
         if not full_row:
+            continue
+        if not is_content_visible(full_row, user_id):
             continue
         favorites.append(serialize_content_item(full_row, user_id, handler))
 
@@ -597,6 +679,15 @@ def bootstrap_payload(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> 
             "total_serials": len(bot_main.db.list_serials(limit=None)),
             "pending_payment_count": bot_main.db.payment_requests.count_documents({"status": "pending"}),
             "pending_ads_count": bot_main.db.ads.count_documents({"status": "pending"}),
+            "top_viewed": [
+                {
+                    "id": str(row.get("id") or ""),
+                    "content_type": str(row.get("content_type") or ""),
+                    "title": str(row.get("title") or ""),
+                    "views": int(row.get("views") or 0),
+                }
+                for row in bot_main.db.list_top_viewed_content(limit=10)
+            ],
             "pending_payments": [
                 {
                     "id": str(row.get("id") or ""),
@@ -779,6 +870,8 @@ class AppHandler(BaseHTTPRequestHandler):
             for row in bot_main.db.search_content(q, limit=24):
                 if content_filter in {"movie", "serial"} and str(row.get("content_type") or "") != content_filter:
                     continue
+                if not is_content_visible(row, int(user["id"])):
+                    continue
                 results.append(serialize_content_item(row, int(user["id"]), self))
             self._write_json(200, {"ok": True, "items": results})
             return
@@ -794,6 +887,9 @@ class AppHandler(BaseHTTPRequestHandler):
             item = load_content(content_type, content_ref)
             if not item:
                 self._write_json(404, {"ok": False, "detail": "Content not found"})
+                return
+            if not is_content_visible(item, int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Access denied"})
                 return
             payload = {"ok": True, "item": serialize_content_item(item, int(user["id"]), self)}
             if content_type == "serial":
@@ -845,6 +941,26 @@ class AppHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path or "/"
+
+        if path == "/api/admin/media-health":
+            user = self._require_user()
+            if not user:
+                return
+            if not bot_main.db.is_admin(int(user["id"])):
+                self._write_json(403, {"ok": False, "detail": "Admin required"})
+                return
+            try:
+                payload = self._read_json_body()
+                raw_url = str(payload.get("url") or "").strip()
+                if not raw_url:
+                    raise ValueError("URL required")
+                url = normalize_media_url(raw_url, self)
+                result = inspect_media_health(url)
+                self._write_json(200, {"ok": True, "result": result})
+                return
+            except ValueError as exc:
+                self._write_json(400, {"ok": False, "detail": str(exc)})
+                return
 
         if path == "/api/favorites/toggle":
             user = self._require_user()

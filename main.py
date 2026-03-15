@@ -401,33 +401,49 @@ class Database:
         if not local_date:
             local_date = daily_reco_local_date()
         cleaned_name = str(full_name or "").strip()
+        tg_id_int = int(tg_id)
+        # Ensure the user exists. IMPORTANT: don't combine upsert with "$ne" filters
+        # (it can race into a duplicate unique key insert when the doc already exists).
+        try:
+            self.users.update_one(
+                {"tg_id": tg_id_int},
+                {
+                    "$setOnInsert": {
+                        "joined_at": now,
+                        "full_name": cleaned_name,
+                        "last_seen_at": now,
+                        "last_active_date": local_date,
+                        "is_pro": False,
+                        "pro_until": None,
+                        "pro_status": "free",
+                        "pro_note": "",
+                        "referred_by": None,
+                        "referral_rewarded": False,
+                    }
+                },
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # Another concurrent upsert inserted the doc first.
+            pass
+
         # Update only when the day changes to avoid heavy write load.
+        update_fields: dict[str, Any] = {
+            "last_seen_at": now,
+            "last_active_date": local_date,
+        }
+        if cleaned_name:
+            update_fields["full_name"] = cleaned_name
         self.users.update_one(
-            {"tg_id": int(tg_id), "last_active_date": {"$ne": local_date}},
-            {
-                "$set": {
-                    "full_name": cleaned_name,
-                    "last_seen_at": now,
-                    "last_active_date": local_date,
-                },
-                "$setOnInsert": {
-                    "joined_at": now,
-                    "is_pro": False,
-                    "pro_until": None,
-                    "pro_status": "free",
-                    "pro_note": "",
-                    "referred_by": None,
-                    "referral_rewarded": False,
-                },
-            },
-            upsert=True,
+            {"tg_id": tg_id_int, "last_active_date": {"$ne": local_date}},
+            {"$set": update_fields},
         )
         # Ensure notification settings exist for daily recommendations.
         self.notification_settings.update_one(
-            {"user_tg_id": int(tg_id)},
+            {"user_tg_id": tg_id_int},
             {
                 "$setOnInsert": {
-                    "user_tg_id": int(tg_id),
+                    "user_tg_id": tg_id_int,
                     "new_content": True,
                     "pro_updates": True,
                     "ads_updates": True,
@@ -1352,8 +1368,8 @@ class Database:
         rows = self._content_feed_rows()
         rows.sort(
             key=lambda item: (
-                int(item.get("views") or 0),
-                int(item.get("downloads") or 0),
+                safe_int(item.get("views") or 0),
+                safe_int(item.get("downloads") or 0),
                 str(item.get("created_at") or ""),
             ),
             reverse=True,
@@ -2968,7 +2984,7 @@ def build_movie_caption(title: str | None, description: str | None) -> str:
 
 
 def append_views_to_caption(caption: str | None, views: int | None) -> str:
-    views_count = max(0, int(views or 0))
+    views_count = max(0, safe_int(views or 0))
     views_line = f"👁 Ko'rishlar: {views_count}"
     base = (caption or "").strip()
     if base:
@@ -4045,9 +4061,37 @@ async def get_bot_username(bot: Bot) -> str | None:
 
 
 def format_int_with_spaces(value: int | None) -> str:
-    num = max(0, int(value or 0))
+    num = max(0, safe_int(value))
     # Telegram UI often uses space as a thousands separator in CIS locales.
     return f"{num:,}".replace(",", " ")
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    """Best-effort int conversion for values like '12 534' or '12,534'."""
+
+    try:
+        if value is None:
+            return int(default)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return int(default)
+            # Remove common separators/spaces.
+            cleaned = re.sub(r"[\s,_]", "", text)
+            cleaned = cleaned.replace(".", "")
+            cleaned = re.sub(r"[^0-9\-]", "", cleaned)
+            if cleaned in {"", "-"}:
+                return int(default)
+            return int(cleaned)
+        return int(value)
+    except Exception:
+        return int(default)
 
 
 def clamp_media_caption(caption: str | None, max_len: int = 1024) -> str:
@@ -4085,7 +4129,7 @@ def build_movie_preview_caption(movie: dict[str, Any], reaction: dict[str, Any])
     likes = int(reaction.get("likes") or 0)
     dislikes = int(reaction.get("dislikes") or 0)
     rating = float(reaction.get("rating") or 0.0)
-    views = int(movie.get("views") or 0)
+    views = safe_int(movie.get("views") or 0)
 
     lines: list[str] = []
     lines.append(f"🎬 {title}")
@@ -4288,7 +4332,7 @@ def build_movie_channel_post_caption(movie: dict[str, Any], reaction: dict[str, 
     likes = int(reaction.get("likes") or 0)
     dislikes = int(reaction.get("dislikes") or 0)
     rating = float(reaction.get("rating") or 0.0)
-    views = int(movie.get("views") or 0)
+    views = safe_int(movie.get("views") or 0)
     lines: list[str] = []
     lines.append(f"🎬 {title}")
     if description:
@@ -4453,7 +4497,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if not is_content_visible_for_user(movie, user_id):
         await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
         return False
-    displayed_views = int(movie.get("views") or 0) + 1
+    displayed_views = safe_int(movie.get("views") or 0) + 1
     reaction = db.get_reaction_summary("movie", resolved_id)
     caption = append_meta_to_caption(
         build_movie_caption(movie["title"], movie["description"]),
@@ -8280,7 +8324,7 @@ async def inline_search(inline_query: InlineQuery) -> None:
         year = item.get("year")
         quality = str(item.get("quality") or "")
         meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
-        views = int(item.get("views") or 0)
+        views = safe_int(item.get("views") or 0)
 
         article_title = title
         if isinstance(year, int):

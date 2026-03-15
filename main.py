@@ -3313,7 +3313,8 @@ async def send_stored_media(
     reply_markup: InlineKeyboardMarkup | None = None,
     requester_id: int | None = None,
 ) -> None:
-    final_caption = append_signature(caption)
+    # Keep captions within Telegram limits (1024) while preserving the bot signature.
+    final_caption = clamp_media_caption(caption)
     viewer_id = requester_id
     if viewer_id is None and message.from_user and not message.from_user.is_bot:
         viewer_id = message.from_user.id
@@ -3325,15 +3326,165 @@ async def send_stored_media(
         protect_content,
         media_type,
     )
+    fallback_text = f"{final_caption}\n\nID: {file_id}".strip() if file_id else (final_caption or "Media")
+
     if media_type == "video":
-        await message.answer_video(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
-    elif media_type == "document":
-        await message.answer_document(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
-    elif media_type == "photo":
-        await message.answer_photo(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
-    elif media_type == "animation":
-        await message.answer_animation(file_id, caption=final_caption, reply_markup=reply_markup, protect_content=protect_content)
-    elif media_type in {"file_id", "stream"}:
+        try:
+            await message.answer_video(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        # Fallback: try as document, then plain text.
+        try:
+            await message.answer_document(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_document(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type == "document":
+        try:
+            await message.answer_document(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        # Fallback: try as video, then plain text.
+        try:
+            await message.answer_video(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_video(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type == "photo":
+        try:
+            await message.answer_photo(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        # Fallback: try as document, then plain text.
+        try:
+            await message.answer_document(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_document(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type == "animation":
+        try:
+            await message.answer_animation(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        # Fallback: try as document, then plain text.
+        try:
+            await message.answer_document(
+                file_id,
+                caption=final_caption,
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_document(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type in {"file_id", "stream"}:
         if not file_id:
             await message.answer(final_caption or "Media", reply_markup=reply_markup, protect_content=protect_content)
             return
@@ -3345,7 +3496,19 @@ async def send_stored_media(
                 protect_content=protect_content,
             )
             return
-        except TelegramBadRequest:
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_video(
+                    file_id,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
             try:
                 await message.answer_document(
                     file_id,
@@ -3354,38 +3517,39 @@ async def send_stored_media(
                     protect_content=protect_content,
                 )
                 return
-            except TelegramBadRequest:
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after))
+                try:
+                    await message.answer_document(
+                        file_id,
+                        caption=final_caption,
+                        reply_markup=reply_markup,
+                        protect_content=protect_content,
+                    )
+                    return
+                except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                    pass
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                 await message.answer(
                     f"{final_caption}\n\nID: {file_id}",
                     reply_markup=reply_markup,
                     protect_content=protect_content,
                 )
                 return
-    elif media_type == "telegram_post":
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type == "telegram_post":
         post_data = unpack_post_ref(file_id)
         if not post_data:
-            raise ValueError("Invalid telegram post reference")
+            await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+            return
         from_chat_id: int | str
         if post_data[0].lstrip("-").isdigit():
             from_chat_id = int(post_data[0])
         else:
             from_chat_id = post_data[0]
-        await message.bot.copy_message(
-            chat_id=message.chat.id,
-            from_chat_id=from_chat_id,
-            message_id=post_data[1],
-            caption=final_caption,
-            reply_markup=reply_markup,
-            protect_content=protect_content,
-        )
-    elif media_type == "link":
-        post_data = parse_telegram_post_link(file_id)
-        if post_data:
-            from_chat_id: int | str
-            if post_data[0].lstrip("-").isdigit():
-                from_chat_id = int(post_data[0])
-            else:
-                from_chat_id = post_data[0]
+        try:
             await message.bot.copy_message(
                 chat_id=message.chat.id,
                 from_chat_id=from_chat_id,
@@ -3394,18 +3558,80 @@ async def send_stored_media(
                 reply_markup=reply_markup,
                 protect_content=protect_content,
             )
+            return
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.bot.copy_message(
+                    chat_id=message.chat.id,
+                    from_chat_id=from_chat_id,
+                    message_id=post_data[1],
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            pass
+        await message.answer(fallback_text, reply_markup=reply_markup, protect_content=protect_content)
+        return
+
+    if media_type == "link":
+        post_data = parse_telegram_post_link(file_id)
+        if post_data:
+            from_chat_id: int | str
+            if post_data[0].lstrip("-").isdigit():
+                from_chat_id = int(post_data[0])
+            else:
+                from_chat_id = post_data[0]
+            try:
+                await message.bot.copy_message(
+                    chat_id=message.chat.id,
+                    from_chat_id=from_chat_id,
+                    message_id=post_data[1],
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+                return
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after))
+                try:
+                    await message.bot.copy_message(
+                        chat_id=message.chat.id,
+                        from_chat_id=from_chat_id,
+                        message_id=post_data[1],
+                        caption=final_caption,
+                        reply_markup=reply_markup,
+                        protect_content=protect_content,
+                    )
+                    return
+                except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                    pass
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+            # Fall back to showing the link if we can't copy the post.
+            await message.answer(
+                f"{final_caption}\n\nLink: {file_id}",
+                reply_markup=reply_markup,
+                protect_content=protect_content,
+            )
+            return
         else:
             await message.answer(
                 f"{final_caption}\n\nLink: {file_id}",
                 reply_markup=reply_markup,
                 protect_content=protect_content,
             )
-    else:
-        await message.answer(
-            f"{final_caption}\n\nID: {file_id}",
-            reply_markup=reply_markup,
-            protect_content=protect_content,
-        )
+            return
+
+    await message.answer(
+        fallback_text,
+        reply_markup=reply_markup,
+        protect_content=protect_content,
+    )
 
 
 def parse_start_payload(text: str | None) -> str | None:
@@ -3520,9 +3746,47 @@ async def send_serial_selector_by_id(
     preview_media_type = str(serial.get("preview_media_type") or "").strip()
     preview_file_id = str(serial.get("preview_file_id") or "").strip()
     if preview_photo_file_id:
-        await message.answer_photo(preview_photo_file_id, caption=caption, reply_markup=kb, protect_content=protect_content)
+        try:
+            await message.answer_photo(
+                preview_photo_file_id,
+                caption=caption,
+                reply_markup=kb,
+                protect_content=protect_content,
+            )
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_photo(
+                    preview_photo_file_id,
+                    caption=caption,
+                    reply_markup=kb,
+                    protect_content=protect_content,
+                )
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                await message.answer(caption, reply_markup=kb, protect_content=protect_content)
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            await message.answer(caption, reply_markup=kb, protect_content=protect_content)
     elif preview_media_type == "photo" and preview_file_id:
-        await message.answer_photo(preview_file_id, caption=caption, reply_markup=kb, protect_content=protect_content)
+        try:
+            await message.answer_photo(
+                preview_file_id,
+                caption=caption,
+                reply_markup=kb,
+                protect_content=protect_content,
+            )
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_photo(
+                    preview_file_id,
+                    caption=caption,
+                    reply_markup=kb,
+                    protect_content=protect_content,
+                )
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                await message.answer(caption, reply_markup=kb, protect_content=protect_content)
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            await message.answer(caption, reply_markup=kb, protect_content=protect_content)
     else:
         await message.answer(caption, reply_markup=kb, protect_content=protect_content)
     db.increment_serial_views(resolved_id)
@@ -3537,7 +3801,7 @@ async def send_media_to_chat(
     caption: str | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    final_caption = append_signature(caption)
+    final_caption = clamp_media_caption(caption)
     chat_id: int | str = int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref
     protect_content = content_should_be_protected(chat_id if isinstance(chat_id, int) and chat_id > 0 else None)
     logging.info(
@@ -4094,8 +4358,19 @@ async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int
     preview_media_type = str(movie.get("preview_media_type") or "")
     preview_file_id = str(movie.get("preview_file_id") or "")
     if preview_media_type == "photo" and preview_file_id:
-        await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
-        return True
+        try:
+            await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
+            return True
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
+                return True
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                pass
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            # Poster file_id may be invalid; fall back to text-only preview.
+            pass
 
     # Fallback: no poster saved.
     await message.answer(caption, reply_markup=markup)

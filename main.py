@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
@@ -94,6 +95,8 @@ class Database:
         self.ad_channels = self.db["ad_channels"]
         self.ads = self.db["ads"]
         self.pro_history = self.db["pro_history"]
+        self.referrals = self.db["referrals"]
+        self.content_posts = self.db["content_posts"]
 
         self.init_indexes()
 
@@ -189,6 +192,13 @@ class Database:
         self.ads.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
         self.ads.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
         self.pro_history.create_index([("user_tg_id", ASCENDING), ("created_at", DESCENDING)])
+        self.referrals.create_index("referred_user_id", unique=True)
+        self.referrals.create_index([("referrer_user_id", ASCENDING), ("created_at", DESCENDING)])
+        self.content_posts.create_index(
+            [("content_type", ASCENDING), ("content_ref", ASCENDING), ("chat_ref", ASCENDING), ("message_id", ASCENDING)],
+            unique=True,
+        )
+        self.content_posts.create_index([("content_type", ASCENDING), ("content_ref", ASCENDING), ("created_at", DESCENDING)])
 
     def seed_admins(self, admin_ids: Iterable[int]) -> None:
         now = utc_now_iso()
@@ -355,6 +365,8 @@ class Database:
                     "pro_until": None,
                     "pro_status": "free",
                     "pro_note": "",
+                    "referred_by": None,
+                    "referral_rewarded": False,
                 },
             },
             upsert=True,
@@ -386,6 +398,8 @@ class Database:
                 "pro_note": 1,
                 "pro_given_at": 1,
                 "pro_given_by": 1,
+                "referred_by": 1,
+                "referral_rewarded": 1,
             },
         )
         return self._doc_without_object_id(doc)
@@ -498,6 +512,133 @@ class Database:
                 "pro_until": update.get("pro_until"),
             }
         )
+
+    def extend_pro_days(
+        self,
+        tg_id: int,
+        days: int,
+        *,
+        admin_id: int | None = None,
+        note: str = "",
+    ) -> str:
+        days = max(1, int(days))
+        now_dt = datetime.now(UTC)
+        now_iso = now_dt.isoformat()
+        user = self.get_user(tg_id) or {"tg_id": tg_id}
+        current_until = str(user.get("pro_until") or "").strip()
+        base_until = now_dt
+        if current_until:
+            try:
+                parsed = datetime.fromisoformat(current_until)
+            except ValueError:
+                parsed = None
+            if parsed and parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            if parsed and parsed > now_dt:
+                base_until = parsed
+        new_until = (base_until + timedelta(days=days)).isoformat()
+        self.users.update_one(
+            {"tg_id": tg_id},
+            {
+                "$set": {
+                    "is_pro": True,
+                    "pro_until": new_until,
+                    "pro_status": "active",
+                    "pro_note": note.strip()[:200],
+                    "pro_given_at": now_iso,
+                    "pro_given_by": admin_id,
+                },
+                "$setOnInsert": {"joined_at": now_iso, "full_name": ""},
+            },
+            upsert=True,
+        )
+        self.pro_history.insert_one(
+            {
+                "user_tg_id": tg_id,
+                "action": "extended",
+                "admin_id": admin_id,
+                "note": note.strip()[:200],
+                "created_at": now_iso,
+                "pro_until": new_until,
+            }
+        )
+        return new_until
+
+    def add_referral(self, referrer_user_id: int, referred_user_id: int) -> bool:
+        if referrer_user_id <= 0 or referred_user_id <= 0:
+            return False
+        if referrer_user_id == referred_user_id:
+            return False
+        now = utc_now_iso()
+        try:
+            self.referrals.insert_one(
+                {
+                    "referrer_user_id": int(referrer_user_id),
+                    "referred_user_id": int(referred_user_id),
+                    "created_at": now,
+                }
+            )
+        except DuplicateKeyError:
+            return False
+        self.users.update_one(
+            {"tg_id": int(referred_user_id)},
+            {
+                "$set": {"referred_by": int(referrer_user_id), "referred_at": now},
+                "$setOnInsert": {"joined_at": now, "full_name": ""},
+            },
+            upsert=True,
+        )
+        return True
+
+    def count_referrals(self, referrer_user_id: int) -> int:
+        return int(self.referrals.count_documents({"referrer_user_id": int(referrer_user_id)}))
+
+    def is_referral_rewarded(self, user_tg_id: int) -> bool:
+        doc = self.users.find_one({"tg_id": int(user_tg_id)}, {"referral_rewarded": 1}) or {}
+        return bool(doc.get("referral_rewarded"))
+
+    def mark_referral_rewarded(self, user_tg_id: int) -> None:
+        self.users.update_one(
+            {"tg_id": int(user_tg_id)},
+            {"$set": {"referral_rewarded": True, "referral_rewarded_at": utc_now_iso()}},
+            upsert=True,
+        )
+
+    def add_content_post(self, content_type: str, content_ref: str, chat_ref: str, message_id: int) -> bool:
+        content_type = str(content_type or "").strip()
+        content_ref = str(content_ref or "").strip()
+        chat_ref = str(chat_ref or "").strip()
+        if content_type not in {"movie", "serial"} or not content_ref or not chat_ref or not isinstance(message_id, int):
+            return False
+        now = utc_now_iso()
+        try:
+            self.content_posts.insert_one(
+                {
+                    "content_type": content_type,
+                    "content_ref": content_ref,
+                    "chat_ref": chat_ref,
+                    "message_id": int(message_id),
+                    "created_at": now,
+                }
+            )
+            return True
+        except DuplicateKeyError:
+            return False
+
+    def list_content_posts(self, content_type: str, content_ref: str, limit: int = 50) -> list[dict[str, Any]]:
+        content_type = str(content_type or "").strip()
+        content_ref = str(content_ref or "").strip()
+        if content_type not in {"movie", "serial"} or not content_ref:
+            return []
+        cursor = (
+            self.content_posts.find(
+                {"content_type": content_type, "content_ref": content_ref},
+                {"chat_ref": 1, "message_id": 1, "created_at": 1},
+            )
+            .sort("created_at", DESCENDING)
+            .limit(max(1, int(limit or 50)))
+        )
+        return [self._doc_without_object_id(doc) or {} for doc in cursor]
 
     def list_active_pro_user_ids(self) -> list[int]:
         now_iso = utc_now_iso()
@@ -2012,35 +2153,36 @@ def parse_admin_ids(value: str) -> list[int]:
     return result
 
 
-BTN_ADMIN_PANEL = "🛠 Admin panel"
-BTN_MINI_APP = "🧩 Mini ilova"
+BTN_ADMIN_PANEL = "🛠 Admin Panel"
+BTN_MINI_APP = "📱 Ilova"
 MINI_APP_MENU_LINK = os.getenv("MINI_APP_MENU_LINK", "https://t.me/MirTopKinoBot/mirtopkino").strip()
-BTN_SUBS = "📢 Majburiy obuna"
+BTN_SUBS = "📡 Kanallar"
 BTN_ADD_MOVIE = "➕ Kino qo'shish"
 BTN_ADD_SERIAL = "📺 Serial qo'shish"
-BTN_DEL_MOVIE = "🗑 Kontent o'chirish"
-BTN_EDIT_CONTENT = "✏️ Kontentni tahrirlash"
+BTN_DEL_MOVIE = "🗑 O'chirish"
+BTN_EDIT_CONTENT = "✏️ Tahrirlash"
 BTN_RANDOM_CODES = "🎲 Random kod"
-BTN_LIST_MOVIES = "📚 Baza ro'yxati"
-BTN_STATS = "📊 Statistika"
+BTN_LIST_MOVIES = "📚 Baza"
+BTN_STATS = "📊 Stat"
 BTN_ADD_ADMIN = "👤 Admin qo'shish"
-BTN_BROADCAST = "📣 Xabar yuborish"
+BTN_BROADCAST = "📣 Broadcast"
 BTN_REQUESTS = "📥 So'rovlar"
-BTN_BACK = "🏠 Asosiy menyu"
+BTN_BACK = "🏠 Menyu"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
-BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
-BTN_RECOMMEND = "🍿 Kino tavsiyasi"
-BTN_FAVORITES = "⭐ Sevimlilar"
-BTN_TOP_VIEWED = "🏆 Top ko'rilganlar"
+BTN_SEARCH_NAME = "🔎 Qidirish"
+BTN_RANDOM_MOVIE = "🎲 Random kino"
+BTN_FAVORITES = "⭐ Saqlangan"
+BTN_TOP_VIEWED = "🔥 TOP kinolar"
 BTN_SETTINGS = "⚙️ Sozlamalar"
-BTN_NOTIFICATIONS = "🔔 Bildirishnomalar"
-BTN_PRO_BUY = "👑 PRO olish"
+BTN_NOTIFICATIONS = "🔔 Bildirishnoma"
+BTN_PRO_BUY = "👑 PRO"
 BTN_PRO_STATUS = "💎 PRO holatim"
 BTN_CREATE_AD = "📢 E'lon berish"
 BTN_MY_ADS = "🗂 E'lonlarim"
 BTN_HELP = "❓ Yordam"
-BTN_PRO_MANAGE = "👑 PRO boshqarish"
+BTN_FREE_PRO = "🎁 Bepul PRO olish"
+BTN_PRO_MANAGE = "👑 PRO boshqaruv"
 BTN_PRO_PRICE = "💰 PRO narxi"
 BTN_PRO_DURATION = "⏳ PRO muddati"
 BTN_PRO_REQUESTS = "💳 PRO so'rovlar"
@@ -2069,6 +2211,8 @@ LEGACY_MENU_TEXTS = {
     "🔥 trending",
     "trending",
     "trend",
+    "🔥 top kinolar",
+    "top kinolar",
     "🏆 top ko'rilganlar",
     "🏆 top",
     "⚙️ sozlamalar",
@@ -2183,7 +2327,7 @@ def build_mini_app_open_kb(payload: str | None = None) -> InlineKeyboardMarkup |
         return None
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🧩 Mini ilovani ochish", url=launch_url)]
+            [InlineKeyboardButton(text="📱 Ilovani ochish", url=launch_url)]
         ]
     )
 
@@ -2315,18 +2459,19 @@ def is_confirm_text(value: str | None) -> bool:
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
     del is_admin
     buttons: list[list[KeyboardButton]] = [
-        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_RECOMMEND)],
-        [KeyboardButton(text=BTN_TOP_VIEWED), KeyboardButton(text=BTN_FAVORITES)],
-        [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_PRO_BUY)],
+        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
+        [KeyboardButton(text=BTN_RANDOM_MOVIE), KeyboardButton(text=BTN_FAVORITES)],
+        [KeyboardButton(text=BTN_PRO_BUY), KeyboardButton(text=BTN_SETTINGS)],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 
 def settings_menu_kb(is_admin: bool, is_pro: bool) -> ReplyKeyboardMarkup:
-    buttons: list[list[KeyboardButton]] = []
-    if get_mini_app_launch_url():
-        buttons.append([KeyboardButton(text=BTN_MINI_APP)])
-    buttons.append([KeyboardButton(text=BTN_NOTIFICATIONS), KeyboardButton(text=BTN_HELP)])
+    buttons: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_NOTIFICATIONS), KeyboardButton(text=BTN_MINI_APP)],
+        [KeyboardButton(text=BTN_HELP), KeyboardButton(text=BTN_PRO_BUY)],
+        [KeyboardButton(text=BTN_FREE_PRO)],
+    ]
     if is_pro:
         buttons.append([KeyboardButton(text=BTN_CREATE_AD), KeyboardButton(text=BTN_MY_ADS)])
     if is_admin:
@@ -2417,9 +2562,9 @@ def content_should_be_protected(tg_id: int | None) -> bool:
 def build_pro_purchase_kb() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if PRO_PAYMENT_LINK_1:
-        rows.append([InlineKeyboardButton(text="💳 To'lov havolasi 1", url=PRO_PAYMENT_LINK_1)])
+        rows.append([InlineKeyboardButton(text="💳 To'lov qilish", url=PRO_PAYMENT_LINK_1)])
     if PRO_PAYMENT_LINK_2:
-        rows.append([InlineKeyboardButton(text="🌐 To'lov havolasi 2", url=PRO_PAYMENT_LINK_2)])
+        rows.append([InlineKeyboardButton(text="🌐 To'lov qilish (2)", url=PRO_PAYMENT_LINK_2)])
     rows.append([InlineKeyboardButton(text="✅ To'lov qildim", callback_data="pro_paid")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2430,10 +2575,9 @@ def build_notification_settings_kb(settings: dict[str, Any]) -> InlineKeyboardMa
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=f"{state_text('new_content')} Yangi kino", callback_data="notif:new_content")],
-            [InlineKeyboardButton(text=f"{state_text('pro_updates')} Pro xabarlari", callback_data="notif:pro_updates")],
-            [InlineKeyboardButton(text=f"{state_text('ads_updates')} E'lon holati", callback_data="notif:ads_updates")],
-            [InlineKeyboardButton(text=f"{state_text('daily_reco')} 🍿 Kunlik tavsiya", callback_data="notif:daily_reco")],
+            [InlineKeyboardButton(text=f"🍿 Kino tavsiyasi  {state_text('daily_reco')}", callback_data="notif:daily_reco")],
+            [InlineKeyboardButton(text=f"📢 E'lonlar  {state_text('ads_updates')}", callback_data="notif:ads_updates")],
+            [InlineKeyboardButton(text=f"🔥 Trend xabarlar  {state_text('new_content')}", callback_data="notif:new_content")],
         ]
     )
 
@@ -2493,7 +2637,7 @@ def build_subscribe_keyboard(channels: list[dict[str, Any]]) -> InlineKeyboardMa
                     url=f"https://t.me/{ref[1:]}",
                 )
             )
-    builder.row(InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub"))
+    builder.row(InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub"))
     return builder.as_markup()
 
 
@@ -2507,7 +2651,29 @@ def is_member_status(status: ChatMemberStatus) -> bool:
 
 
 def normalize_code(text: str) -> str:
-    return text.strip()
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    # Allow codes like "k12345" (common in channel posts) to work as "12345".
+    if (raw[0] in {"k", "K"}) and raw[1:].isdigit():
+        return raw[1:]
+    return raw
+
+
+def format_public_code(code: str) -> str:
+    """Format a content code for public display (e.g., channel posts).
+
+    If the stored code is numeric (e.g., "12345"), we display it as "k12345"
+    to make it visually distinct for users. If it's already non-numeric, we
+    keep it as-is.
+    """
+
+    raw = (code or "").strip()
+    if not raw:
+        return ""
+    if raw.isdigit():
+        return f"k{raw}"
+    return raw
 
 
 def normalize_lookup_text(value: str) -> str:
@@ -2665,19 +2831,17 @@ def build_search_results_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup
         if not content_type or not content_ref:
             continue
         title = str(item.get("title") or "Noma'lum")
-        code = str(item.get("code") or "")
         year = item.get("year")
         quality = str(item.get("quality") or "")
         meta = format_meta_line(year if isinstance(year, int) else None, quality, None)
         label = title
-        if code:
-            label = f"{code} - {title}"
         if meta:
             label = f"{label} ({meta})"
         if len(label) > 60:
             label = f"{label[:57]}..."
         icon = "🎬" if content_type == "movie" else "📺"
-        builder.button(text=f"{icon} {label}", callback_data=f"open:{content_type}:{content_ref}")
+        action = "preview" if content_type == "movie" else "open"
+        builder.button(text=f"{icon} {label}", callback_data=f"{action}:{content_type}:{content_ref}")
     builder.adjust(1)
     markup = builder.as_markup()
     if not markup.inline_keyboard:
@@ -2693,8 +2857,7 @@ def build_favorites_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup | No
         content_type = str(item.get("content_type") or "")
         content_ref = str(item.get("content_ref") or "")
         title = str(item.get("title") or "Noma'lum")
-        code = str(item.get("code") or "")
-        display = f"{code} - {title}" if code else title
+        display = title
         if len(display) > 48:
             display = f"{display[:45]}..."
         builder.row(
@@ -2883,24 +3046,58 @@ def build_serial_episodes_kb(
     is_favorite: bool = False,
     likes: int = 0,
     dislikes: int = 0,
+    page: int = 1,
+    per_page: int = 10,
 ) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
+    del likes, dislikes
+    emoji_numbers = {
+        1: "1️⃣",
+        2: "2️⃣",
+        3: "3️⃣",
+        4: "4️⃣",
+        5: "5️⃣",
+        6: "6️⃣",
+        7: "7️⃣",
+        8: "8️⃣",
+        9: "9️⃣",
+        10: "🔟",
+    }
+
+    unique_sorted = sorted({int(n) for n in (episode_numbers or []) if int(n) > 0})
+    per_page = max(1, min(20, int(per_page or 10)))
+    total_pages = max(1, (len(unique_sorted) + per_page - 1) // per_page)
+    page = max(1, min(total_pages, int(page or 1)))
+    start = (page - 1) * per_page
+    subset = unique_sorted[start : start + per_page]
+
     fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
     fav_action = "del" if is_favorite else "add"
-    builder.row(
-        InlineKeyboardButton(
-            text=fav_text,
-            callback_data=f"fav:{fav_action}:serial:{serial_id}",
-        )
-    )
-    builder.row(
-        InlineKeyboardButton(text=f"👍 {max(0, likes)}", callback_data=f"react:like:serial:{serial_id}"),
-        InlineKeyboardButton(text=f"👎 {max(0, dislikes)}", callback_data=f"react:dislike:serial:{serial_id}"),
-    )
-    for number in episode_numbers:
-        builder.button(text=str(number), callback_data=f"serial_ep:{serial_id}:{number}")
-    builder.adjust(5)
-    return builder.as_markup()
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{fav_action}:serial:{serial_id}")]
+    ]
+
+    # Episode grid (5 columns).
+    chunk: list[InlineKeyboardButton] = []
+    for number in subset:
+        label = emoji_numbers.get(number, str(number))
+        chunk.append(InlineKeyboardButton(text=label, callback_data=f"serial_ep:{serial_id}:{number}"))
+        if len(chunk) == 5:
+            rows.append(chunk)
+            chunk = []
+    if chunk:
+        rows.append(chunk)
+
+    if total_pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 1:
+            nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"serial_page:{serial_id}:{page - 1}"))
+        if page < total_pages:
+            nav.append(InlineKeyboardButton(text="➡️ Keyingi", callback_data=f"serial_page:{serial_id}:{page + 1}"))
+        if nav:
+            rows.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_episode_navigation_kb(
@@ -3248,20 +3445,40 @@ def parse_web_action_payload(payload: str | None) -> str | None:
     return action or None
 
 
+def parse_referral_payload(payload: str | None) -> int | None:
+    value = (payload or "").strip()
+    if not value.startswith("ref_"):
+        return None
+    raw = value[4:].strip()
+    if not raw.isdigit():
+        return None
+    return int(raw)
+
+
 def build_start_deeplink(username: str, payload: str) -> str:
     return f"https://t.me/{username}?start={payload}"
 
 
-async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: int | None = None) -> bool:
-    serial = db.get_serial(serial_id)
+async def send_serial_selector_by_id(
+    message: Message,
+    serial_id: str,
+    user_id: int | None = None,
+    *,
+    compact: bool = False,
+) -> bool:
+    serial = db.get_serial(serial_id) or db.get_serial_by_code(serial_id)
     if not serial:
+        await message.answer("❌ Serial topilmadi.")
+        return False
+    resolved_id = str(serial.get("id") or serial_id).strip()
+    if not resolved_id:
         await message.answer("❌ Serial topilmadi.")
         return False
     if not is_content_visible_for_user(serial, user_id):
         await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
         return False
 
-    episodes = db.list_serial_episodes(serial_id)
+    episodes = db.list_serial_episodes(resolved_id)
     if not episodes:
         await message.answer("📭 Bu serialga hali qism qo'shilmagan.")
         return False
@@ -3270,35 +3487,45 @@ async def send_serial_selector_by_id(message: Message, serial_id: str, user_id: 
     requester_id = user_id
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
-    is_favorite = bool(requester_id and db.is_favorite(requester_id, "serial", serial["id"]))
-    reaction = db.get_reaction_summary("serial", serial["id"])
-    displayed_views = int(serial.get("views") or 0) + 1
-    serial_caption = build_serial_caption(
-        serial["title"],
-        serial["description"],
-        episodes_count=len(episode_numbers),
-        year=serial.get("year") if isinstance(serial.get("year"), int) else None,
-        quality=str(serial.get("quality") or ""),
-        genres=[str(g) for g in serial.get("genres", []) if str(g).strip()],
+    is_favorite = bool(requester_id and db.is_favorite(requester_id, "serial", resolved_id))
+    reaction = db.get_reaction_summary("serial", resolved_id)
+
+    if compact:
+        caption = "📺 Serial topildi!\n\n👇 Kerakli qismni tanlang"
+    else:
+        title = str(serial.get("title") or "Serial").strip()
+        year = serial.get("year") if isinstance(serial.get("year"), int) else None
+        genres = [str(g) for g in serial.get("genres", []) if str(g).strip()]
+        rating = float(reaction.get("rating") or 0.0)
+        caption_lines = [
+            f"📺 {title}",
+            "",
+            f"📅 {year if year else '-'}",
+            f"🎭 {format_genres_line(genres)}",
+            f"⭐ {rating}",
+            "",
+            "👇 Kerakli qismni tanlang",
+        ]
+        caption = "\n".join(caption_lines)
+    caption = clamp_media_caption(caption)
+
+    kb = build_serial_episodes_kb(
+        resolved_id,
+        episode_numbers,
+        is_favorite=is_favorite,
+        page=1,
     )
-    serial_caption = append_views_to_caption(serial_caption, displayed_views)
-    serial_caption = append_reaction_stats_to_caption(
-        serial_caption,
-        reaction.get("likes"),
-        reaction.get("dislikes"),
-    )
-    await message.answer(
-        f"{serial_caption}\n\n👇 Kerakli qismni tanlang:",
-        reply_markup=build_serial_episodes_kb(
-            serial["id"],
-            episode_numbers,
-            is_favorite=is_favorite,
-            likes=int(reaction.get("likes") or 0),
-            dislikes=int(reaction.get("dislikes") or 0),
-        ),
-        protect_content=content_should_be_protected(requester_id),
-    )
-    db.increment_serial_views(serial["id"])
+    protect_content = content_should_be_protected(requester_id)
+    preview_photo_file_id = str(serial.get("preview_photo_file_id") or "").strip()
+    preview_media_type = str(serial.get("preview_media_type") or "").strip()
+    preview_file_id = str(serial.get("preview_file_id") or "").strip()
+    if preview_photo_file_id:
+        await message.answer_photo(preview_photo_file_id, caption=caption, reply_markup=kb, protect_content=protect_content)
+    elif preview_media_type == "photo" and preview_file_id:
+        await message.answer_photo(preview_file_id, caption=caption, reply_markup=kb, protect_content=protect_content)
+    else:
+        await message.answer(caption, reply_markup=kb, protect_content=protect_content)
+    db.increment_serial_views(resolved_id)
     return True
 
 
@@ -3495,16 +3722,406 @@ async def get_bot_username(bot: Bot) -> str | None:
     return BOT_USERNAME_CACHE
 
 
-async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
+def format_int_with_spaces(value: int | None) -> str:
+    num = max(0, int(value or 0))
+    # Telegram UI often uses space as a thousands separator in CIS locales.
+    return f"{num:,}".replace(",", " ")
+
+
+def clamp_media_caption(caption: str | None, max_len: int = 1024) -> str:
+    base = (caption or "").strip()
+    if not base:
+        return BOT_SIGNATURE
+    signature = f"\n\n{BOT_SIGNATURE}"
+    # Keep signature intact when trimming.
+    if base.endswith(BOT_SIGNATURE):
+        trimmed = base[:max_len].rstrip()
+        return trimmed
+    if len(base) + len(signature) <= max_len:
+        return f"{base}{signature}"
+    budget = max(0, max_len - len(signature))
+    trimmed = base[:budget].rstrip()
+    if not trimmed:
+        return BOT_SIGNATURE
+    return f"{trimmed}{signature}"
+
+
+def format_genres_line(genres: list[str]) -> str:
+    cleaned = [str(g).strip() for g in (genres or []) if str(g).strip()]
+    if not cleaned:
+        return "-"
+    # Stored genres are usually lowercase; make them readable.
+    pretty = [g[:1].upper() + g[1:] if g else g for g in cleaned]
+    return " | ".join(pretty[:6])
+
+
+def build_movie_preview_caption(movie: dict[str, Any], reaction: dict[str, Any]) -> str:
+    title = str(movie.get("title") or "Kino").strip()
+    description = str(movie.get("description") or "").strip()
+    year = movie.get("year") if isinstance(movie.get("year"), int) else None
+    genres = [str(g) for g in movie.get("genres", []) if str(g).strip()]
+    likes = int(reaction.get("likes") or 0)
+    dislikes = int(reaction.get("dislikes") or 0)
+    rating = float(reaction.get("rating") or 0.0)
+    views = int(movie.get("views") or 0)
+
+    lines: list[str] = []
+    lines.append(f"🎬 {title}")
+    lines.append("")
+    lines.append(f"📅 Yil: {year if year else '-'}")
+    lines.append(f"🎭 Janr: {format_genres_line(genres)}")
+    lines.append(f"⭐ Reyting: {rating} / 5")
+    if description:
+        lines.append("")
+        lines.append("📖 Tavsif:")
+        # Avoid hitting Telegram caption limit.
+        lines.append(description[:700])
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"👁 Ko'rishlar: {format_int_with_spaces(views)}")
+    lines.append(f"👍 {max(0, likes)}   👎 {max(0, dislikes)}")
+    return clamp_media_caption("\n".join(lines))
+
+
+def build_daily_reco_caption(movie: dict[str, Any], reaction: dict[str, Any]) -> str:
+    title = str(movie.get("title") or "Kino").strip()
+    year = movie.get("year") if isinstance(movie.get("year"), int) else None
+    genres = [str(g) for g in movie.get("genres", []) if str(g).strip()]
+    rating = float(reaction.get("rating") or 0.0)
+    lines = [
+        "🎬 Bugungi kino tavsiyasi",
+        "",
+        title,
+        "",
+        f"⭐ {rating}",
+        f"🎭 {format_genres_line(genres)}",
+        f"📅 {year if year else '-'}",
+        "",
+        "🌙 Kechki tomosha uchun ideal kino!",
+    ]
+    return clamp_media_caption("\n".join(lines))
+
+
+def build_random_movie_caption(movie: dict[str, Any], reaction: dict[str, Any]) -> str:
+    title = str(movie.get("title") or "Kino").strip()
+    year = movie.get("year") if isinstance(movie.get("year"), int) else None
+    genres = [str(g) for g in movie.get("genres", []) if str(g).strip()]
+    rating = float(reaction.get("rating") or 0.0)
+    lines = [
+        "🎲 Random kino",
+        "",
+        "Bugun sizga tavsiya qilamiz 👇",
+        "",
+        f"🎬 {title}",
+        f"⭐ {rating} / 5",
+        f"🎭 {format_genres_line(genres)}",
+        f"📅 {year if year else '-'}",
+    ]
+    return clamp_media_caption("\n".join(lines))
+
+
+def build_movie_preview_kb(movie_id: str, is_favorite: bool, likes: int = 0, dislikes: int = 0) -> InlineKeyboardMarkup:
+    fav_text = "💔 Sevimlidan olib tashlash" if is_favorite else "⭐ Sevimliga qo'shish"
+    fav_action = "del" if is_favorite else "add"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Ko'rish", callback_data=f"open:movie:{movie_id}")],
+            [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")],
+            [
+                InlineKeyboardButton(text=f"👍 {max(0, int(likes or 0))}", callback_data=f"react:like:movie:{movie_id}"),
+                InlineKeyboardButton(text=f"👎 {max(0, int(dislikes or 0))}", callback_data=f"react:dislike:movie:{movie_id}"),
+            ],
+        ]
+    )
+
+
+def build_daily_reco_kb(movie_id: str, is_favorite: bool) -> InlineKeyboardMarkup:
+    fav_text = "⭐ Saqlash" if not is_favorite else "💔 O'chirish"
+    fav_action = "add" if not is_favorite else "del"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Kinoni ko'rish", callback_data=f"open:movie:{movie_id}")],
+            [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")],
+            [InlineKeyboardButton(text="🔥 Yana tavsiya", callback_data="reco:again")],
+        ]
+    )
+
+
+def build_random_movie_kb(movie_id: str, is_favorite: bool) -> InlineKeyboardMarkup:
+    fav_text = "⭐ Saqlash" if not is_favorite else "💔 O'chirish"
+    fav_action = "add" if not is_favorite else "del"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="▶️ Ko'rish", callback_data=f"open:movie:{movie_id}")],
+            [InlineKeyboardButton(text="🎲 Yana random", callback_data="rand:again")],
+            [InlineKeyboardButton(text=fav_text, callback_data=f"fav:{fav_action}:movie:{movie_id}")],
+        ]
+    )
+
+
+def inline_keyboard_has_callback(markup: InlineKeyboardMarkup | None, callback_data: str) -> bool:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return False
+    for row in markup.inline_keyboard:
+        for btn in row:
+            if str(getattr(btn, "callback_data", "") or "") == callback_data:
+                return True
+    return False
+
+
+def inline_keyboard_has_prefix(markup: InlineKeyboardMarkup | None, prefix: str) -> bool:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return False
+    for row in markup.inline_keyboard:
+        for btn in row:
+            data = str(getattr(btn, "callback_data", "") or "")
+            if data.startswith(prefix):
+                return True
+    return False
+
+
+def detect_movie_card_kind(message: Message) -> str:
+    markup = message.reply_markup if message else None
+    if inline_keyboard_has_callback(markup, "reco:again"):
+        return "daily"
+    if inline_keyboard_has_callback(markup, "rand:again"):
+        return "random"
+    if inline_keyboard_has_prefix(markup, "open:movie:"):
+        return "preview"
+    return "actions"
+
+
+async def refresh_movie_preview_message(message: Message, movie_id: str, user_id: int) -> None:
+    movie = db.get_movie_by_id(movie_id) or db.get_movie(movie_id)
+    if not movie:
+        return
+    resolved_id = str(movie.get("id") or movie_id).strip()
+    if not resolved_id:
+        return
+    reaction = db.get_reaction_summary("movie", resolved_id)
+    is_favorite = db.is_favorite(user_id, "movie", resolved_id)
+    caption = build_movie_preview_caption(movie, reaction)
+    markup = build_movie_preview_kb(
+        resolved_id,
+        is_favorite=is_favorite,
+        likes=int(reaction.get("likes") or 0),
+        dislikes=int(reaction.get("dislikes") or 0),
+    )
+    try:
+        if message.photo or message.caption:
+            await message.edit_caption(caption=caption, reply_markup=markup)
+        else:
+            await message.edit_text(caption, reply_markup=markup)
+    except TelegramBadRequest:
+        return
+
+
+async def refresh_movie_card_message(message: Message, movie_id: str, user_id: int) -> None:
+    kind = detect_movie_card_kind(message)
+    movie = db.get_movie_by_id(movie_id) or db.get_movie(movie_id)
+    if not movie:
+        return
+    resolved_id = str(movie.get("id") or movie_id).strip()
+    if not resolved_id:
+        return
+    reaction = db.get_reaction_summary("movie", resolved_id)
+    is_favorite = db.is_favorite(user_id, "movie", resolved_id)
+    try:
+        if kind == "daily":
+            caption = build_daily_reco_caption(movie, reaction)
+            await message.edit_text(caption, reply_markup=build_daily_reco_kb(resolved_id, is_favorite))
+        elif kind == "random":
+            caption = build_random_movie_caption(movie, reaction)
+            await message.edit_text(caption, reply_markup=build_random_movie_kb(resolved_id, is_favorite))
+        elif kind == "preview":
+            await refresh_movie_preview_message(message, resolved_id, user_id)
+        else:
+            await message.edit_reply_markup(
+                reply_markup=build_movie_actions_kb(
+                    resolved_id,
+                    is_favorite=is_favorite,
+                    likes=int(reaction.get("likes") or 0),
+                    dislikes=int(reaction.get("dislikes") or 0),
+                )
+            )
+    except TelegramBadRequest:
+        return
+
+
+MOVIE_POST_SYNC_LAST_AT: dict[str, float] = {}
+
+
+def clamp_plain_text(text: str, max_len: int = 1024) -> str:
+    base = (text or "").strip()
+    if len(base) <= max_len:
+        return base
+    return base[:max_len].rstrip()
+
+
+def build_movie_channel_post_caption(movie: dict[str, Any], reaction: dict[str, Any], bot_username: str) -> str:
+    title = str(movie.get("title") or "Kino").strip()
+    description = str(movie.get("description") or "").strip()
+    code = str(movie.get("code") or "").strip()
+    public_code = format_public_code(code)
+    likes = int(reaction.get("likes") or 0)
+    dislikes = int(reaction.get("dislikes") or 0)
+    rating = float(reaction.get("rating") or 0.0)
+    views = int(movie.get("views") or 0)
+    lines: list[str] = []
+    lines.append(f"🎬 {title}")
+    if description:
+        lines.append(f"📖 Tavsif: {description[:800]}")
+    lines.append("")
+    lines.append(f"⭐ Reyting: {rating}/5")
+    lines.append(f"👍 {max(0, likes)} | 👎 {max(0, dislikes)}")
+    lines.append(f"👁 Ko'rishlar: {format_int_with_spaces(views)}")
+    if public_code:
+        lines.append("")
+        lines.append(f"Kinoni ko'rish uchun @{bot_username} ga {public_code} kodi yuboring")
+    return clamp_plain_text("\n".join(lines), 1024)
+
+
+def build_movie_channel_post_kb(deeplink: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="▶️ Ko'rish", url=deeplink)]])
+
+
+async def maybe_post_movie_to_channel(bot: Bot, movie_id: str) -> None:
+    channel_ref = str(CONTENT_POST_CHANNEL_REF or "").strip()
+    if not channel_ref:
+        return
     movie = db.get_movie_by_id(movie_id)
     if not movie:
+        return
+    username = await get_bot_username(bot)
+    if not username:
+        return
+    code = str(movie.get("code") or "").strip()
+    payload_ref = (format_public_code(code) or code) or movie_id
+    deeplink = build_start_deeplink(username, f"m_{payload_ref}")
+    reaction = db.get_reaction_summary("movie", movie_id)
+    caption = build_movie_channel_post_caption(movie, reaction, username)
+    kb = build_movie_channel_post_kb(deeplink)
+    chat_id: int | str = int(channel_ref) if channel_ref.lstrip("-").isdigit() else channel_ref
+    preview_media_type = str(movie.get("preview_media_type") or "")
+    preview_file_id = str(movie.get("preview_file_id") or "")
+    try:
+        if preview_media_type == "photo" and preview_file_id:
+            sent = await bot.send_photo(chat_id=chat_id, photo=preview_file_id, caption=caption, reply_markup=kb)
+        else:
+            sent = await bot.send_message(chat_id=chat_id, text=caption, reply_markup=kb)
+    except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+        return
+    try:
+        db.add_content_post("movie", movie_id, channel_ref, int(sent.message_id))
+    except Exception:
+        pass
+
+
+async def sync_movie_channel_posts(bot: Bot, movie_id: str, *, min_interval_seconds: float = 8.0) -> None:
+    movie_id = str(movie_id or "").strip()
+    if not movie_id:
+        return
+    now = time.monotonic()
+    last = MOVIE_POST_SYNC_LAST_AT.get(movie_id, 0.0)
+    if now - last < float(min_interval_seconds):
+        return
+    MOVIE_POST_SYNC_LAST_AT[movie_id] = now
+
+    posts = db.list_content_posts("movie", movie_id, limit=60)
+    if not posts:
+        return
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        return
+    username = await get_bot_username(bot)
+    if not username:
+        return
+    code = str(movie.get("code") or "").strip()
+    payload_ref = (format_public_code(code) or code) or movie_id
+    deeplink = build_start_deeplink(username, f"m_{payload_ref}")
+    reaction = db.get_reaction_summary("movie", movie_id)
+    caption = build_movie_channel_post_caption(movie, reaction, username)
+    kb = build_movie_channel_post_kb(deeplink)
+    for row in posts:
+        chat_ref = str(row.get("chat_ref") or "").strip()
+        msg_id = row.get("message_id")
+        if not chat_ref or not isinstance(msg_id, int):
+            continue
+        chat_id: int | str = int(chat_ref) if chat_ref.lstrip("-").isdigit() else chat_ref
+        try:
+            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=caption, reply_markup=kb)
+        except TelegramBadRequest:
+            try:
+                await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=caption, reply_markup=kb)
+            except TelegramBadRequest:
+                continue
+        except (TelegramForbiddenError, ClientDecodeError):
+            continue
+
+
+async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
+    movie = db.get_movie_by_id(movie_id) or db.get_movie(movie_id)
+    if not movie:
+        normalized = normalize_code(movie_id)
+        if normalized and normalized != movie_id:
+            movie = db.get_movie(normalized)
+        if not movie and normalized.isdigit():
+            movie = db.get_movie(f"k{normalized}") or db.get_movie(f"K{normalized}")
+    if not movie:
+        await message.answer("❌ Kino topilmadi.")
+        return False
+    resolved_id = str(movie.get("id") or movie_id).strip()
+    if not resolved_id:
+        await message.answer("❌ Kino topilmadi.")
+        return False
+    if not is_content_visible_for_user(movie, user_id):
+        await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
+        return False
+
+    reaction = db.get_reaction_summary("movie", resolved_id)
+    requester_id = user_id
+    if requester_id is None and message.from_user and not message.from_user.is_bot:
+        requester_id = message.from_user.id
+    is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", resolved_id))
+    caption = build_movie_preview_caption(movie, reaction)
+    markup = build_movie_preview_kb(
+        resolved_id,
+        is_favorite=is_favorite,
+        likes=int(reaction.get("likes") or 0),
+        dislikes=int(reaction.get("dislikes") or 0),
+    )
+
+    preview_media_type = str(movie.get("preview_media_type") or "")
+    preview_file_id = str(movie.get("preview_file_id") or "")
+    if preview_media_type == "photo" and preview_file_id:
+        await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
+        return True
+
+    # Fallback: no poster saved.
+    await message.answer(caption, reply_markup=markup)
+    return True
+
+
+async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
+    movie = db.get_movie_by_id(movie_id) or db.get_movie(movie_id)
+    if not movie:
+        normalized = normalize_code(movie_id)
+        if normalized and normalized != movie_id:
+            movie = db.get_movie(normalized)
+        if not movie and normalized.isdigit():
+            movie = db.get_movie(f"k{normalized}") or db.get_movie(f"K{normalized}")
+    if not movie:
+        await message.answer("❌ Kino topilmadi.")
+        return False
+    resolved_id = str(movie.get("id") or movie_id).strip()
+    if not resolved_id:
         await message.answer("❌ Kino topilmadi.")
         return False
     if not is_content_visible_for_user(movie, user_id):
         await message.answer("🔒 Bu kontent faqat PRO yoki admin uchun.")
         return False
     displayed_views = int(movie.get("views") or 0) + 1
-    reaction = db.get_reaction_summary("movie", movie["id"])
+    reaction = db.get_reaction_summary("movie", resolved_id)
     caption = append_meta_to_caption(
         build_movie_caption(movie["title"], movie["description"]),
         movie.get("year") if isinstance(movie.get("year"), int) else None,
@@ -3516,9 +4133,9 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     requester_id = user_id
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
-    is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", movie["id"]))
+    is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", resolved_id))
     actions_kb = build_movie_actions_kb(
-        movie["id"],
+        resolved_id,
         is_favorite=is_favorite,
         likes=int(reaction.get("likes") or 0),
         dislikes=int(reaction.get("dislikes") or 0),
@@ -3528,7 +4145,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     if media_type == "stream" or not file_id:
         await message.answer(
             caption or f"🎬 {movie.get('title') or 'Kino'}",
-            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or ''}"), actions_kb),
+            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
             protect_content=content_should_be_protected(requester_id),
         )
     else:
@@ -3540,8 +4157,12 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
             requester_id=requester_id,
             reply_markup=actions_kb,
         )
-    db.increment_movie_views(movie["id"])
-    db.increment_movie_downloads(movie["id"])
+    db.increment_movie_views(resolved_id)
+    db.increment_movie_downloads(resolved_id)
+    try:
+        await sync_movie_channel_posts(message.bot, resolved_id)
+    except Exception:
+        logging.exception("content_post: failed to sync movie posts (movie_id=%s)", resolved_id)
     return True
 
 
@@ -3640,12 +4261,16 @@ def build_pro_offer_text(user_id: int) -> str:
     settings = db.get_bot_settings()
     payment_code = format_pro_payment_code(user_id)
     return (
-        "👑 Yagona PRO\n\n"
-        f"💰 Narx: {settings['pro_price_text']}\n"
-        f"🗓 Muddat: {settings['pro_duration_days']} kun\n\n"
-        "🧾 Izohga shu kodni yozing:\n"
-        f"`{payment_code}`\n\n"
-        f"Yoki ID: `{user_id}`\n\n"
+        "👑 MirTopKinoBot PRO\n\n"
+        f"Atigi {settings['pro_price_text']}\n\n"
+        "PRO foydalanuvchilar:\n"
+        "🚫 Majburiy obunasiz foydalanadi\n"
+        "⚡ Kinolar tez ochiladi\n"
+        "🎬 Maxsus kinolar\n"
+        "🍿 Reklamalarsiz foydalanish\n\n"
+        "🧾 To'lov izohiga shu kodni yozing:\n"
+        f"{payment_code}\n\n"
+        f"ID: {user_id}\n\n"
         "✅ To'lovdan keyin `✅ To'lov qildim` ni bosing."
     )
 
@@ -3749,7 +4374,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8537979650:AAFkSIbRnx7ha7muxZ1MDK5QMIxV5MAC4
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://mongo:wGVAMNxMWZgocdRVBduRDnRlJePweOay@metro.proxy.rlwy.net:36399").strip()
 MONGODB_DB = os.getenv("MONGODB_DB", "kino_bot").strip() or "kino_bot"
 ADMIN_IDS = parse_admin_ids(os.getenv("ADMIN_IDS", "7903688837,7546181748"))
-PRO_PRICE_TEXT_DEFAULT = os.getenv("PRO_PRICE_TEXT", "50 000 so'm / 30 kun").strip() or "50 000 so'm / 30 kun"
+PRO_PRICE_TEXT_DEFAULT = os.getenv("PRO_PRICE_TEXT", "10 000 so'm / 30 kun").strip() or "10 000 so'm / 30 kun"
 PRO_DURATION_DAYS_DEFAULT = max(1, int(os.getenv("PRO_DURATION_DAYS", "30") or 30))
 PRO_PAYMENT_LINK_1 = os.getenv(
     "PRO_PAYMENT_LINK_1",
@@ -3759,6 +4384,9 @@ PRO_PAYMENT_LINK_2 = os.getenv(
     "PRO_PAYMENT_LINK_2",
     "https://danatlar.uz/Sara_Kinolar_o1",
 ).strip()
+
+# Optional: auto-post new movies to a channel (set to chat id like -100... or @channel).
+CONTENT_POST_CHANNEL_REF = os.getenv("CONTENT_POST_CHANNEL_REF", "").strip()
 
 DAILY_RECO_ENABLED = os.getenv("DAILY_RECO_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 DAILY_RECO_AT = os.getenv("DAILY_RECO_AT", "20:00").strip() or "20:00"
@@ -3821,15 +4449,11 @@ async def ensure_subscription(user_id: int, bot: Bot) -> tuple[bool, list[dict[s
 
 
 async def ask_for_subscription(message: Message, channels: list[dict[str, Any]]) -> None:
-    text_lines = [
-        "🔒 Davom etish uchun obuna bo'ling.",
-        "",
-        "Quyidagi kanallarga kirib, so'ng tekshiring:",
-    ]
-    for ch in channels:
-        title = ch["title"] or ch["channel_ref"]
-        text_lines.append(f"• {title}")
-    await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
+    await message.answer(
+        "🔒 Davom etish uchun kanallarga obuna bo'ling\n\n"
+        "Quyidagi kanallarga kirib keyin tekshiring 👇",
+        reply_markup=build_subscribe_keyboard(channels),
+    )
 
 
 def parse_hhmm(value: str, *, default_hour: int = 20, default_minute: int = 0) -> tuple[int, int]:
@@ -3889,78 +4513,58 @@ async def send_daily_recommendation(bot: Bot) -> None:
         return
 
     reaction = db.get_reaction_summary("movie", movie_id)
-    caption = append_meta_to_caption(
-        build_movie_caption(movie.get("title"), movie.get("description")),
-        movie.get("year") if isinstance(movie.get("year"), int) else None,
-        str(movie.get("quality") or ""),
-        [str(g) for g in movie.get("genres", []) if str(g).strip()],
-    )
-    caption = f"🍿 Kun tavsiyasi\n\n{caption}" if caption else "🍿 Kun tavsiyasi"
-    caption = append_reaction_stats_to_caption(caption, reaction.get("likes"), reaction.get("dislikes"))
+    final_text = build_daily_reco_caption(movie, reaction)
+    final_kb = build_daily_reco_kb(movie_id, is_favorite=False)
 
-    actions_kb = build_movie_actions_kb(
-        movie_id,
-        is_favorite=False,
-        likes=int(reaction.get("likes") or 0),
-        dislikes=int(reaction.get("dislikes") or 0),
-    )
+    semaphore = asyncio.Semaphore(25)
 
-    media_type = str(movie.get("media_type") or "")
-    file_id = str(movie.get("file_id") or "")
-    protect_content = content_should_be_protected(None)
-    reply_markup = actions_kb
-    if media_type == "stream" or not file_id:
-        reply_markup = merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie_id}"), actions_kb)
-
-    success = 0
-    failed = 0
-    logging.info("daily_reco: sending movie_id=%s to %s users", movie_id, len(user_ids))
-    for user_id in user_ids:
-        try:
-            if media_type == "stream" or not file_id:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=append_signature(caption),
-                    reply_markup=reply_markup,
-                    protect_content=protect_content,
-                )
-            else:
-                await send_media_to_chat(
-                    bot=bot,
-                    chat_ref=str(user_id),
-                    media_type=media_type,
-                    file_id=file_id,
-                    caption=caption,
-                    reply_markup=reply_markup,
-                )
-            success += 1
-        except TelegramRetryAfter as exc:
-            await asyncio.sleep(float(exc.retry_after))
+    async def safe_send_countdown(chat_id: int) -> tuple[int, int] | None:
+        async with semaphore:
             try:
-                if media_type == "stream" or not file_id:
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=append_signature(caption),
-                        reply_markup=reply_markup,
-                        protect_content=protect_content,
-                    )
-                else:
-                    await send_media_to_chat(
-                        bot=bot,
-                        chat_ref=str(user_id),
-                        media_type=media_type,
-                        file_id=file_id,
-                        caption=caption,
-                        reply_markup=reply_markup,
-                    )
-                success += 1
+                msg = await bot.send_message(chat_id=chat_id, text="🍿 3...")
+                return chat_id, msg.message_id
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after))
+                try:
+                    msg = await bot.send_message(chat_id=chat_id, text="🍿 3...")
+                    return chat_id, msg.message_id
+                except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                    return None
             except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
-                failed += 1
-        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
-            failed += 1
+                return None
+
+    async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
+        async with semaphore:
+            try:
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(float(exc.retry_after))
+                try:
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+                except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                    return
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                return
+
+    logging.info("daily_reco: sending countdown movie_id=%s to %s users", movie_id, len(user_ids))
+    sent_refs = await asyncio.gather(*(safe_send_countdown(user_id) for user_id in user_ids))
+    targets: list[tuple[int, int]] = []
+    for item in sent_refs:
+        if not item:
+            continue
+        targets.append(item)
+    if not targets:
+        return
+
+    await asyncio.sleep(0.7)
+    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, "🍿 2...") for chat_id, msg_id in targets))
+    await asyncio.sleep(0.7)
+    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, "🍿 1...") for chat_id, msg_id in targets))
+    await asyncio.sleep(0.7)
+    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, final_text, reply_markup=final_kb) for chat_id, msg_id in targets))
 
     db.set_daily_reco_sent(local_date)
-    logging.info("daily_reco: done success=%s failed=%s date=%s movie_id=%s", success, failed, local_date, movie_id)
+    logging.info("daily_reco: done date=%s movie_id=%s sent=%s", local_date, movie_id, len(targets))
 
 
 async def daily_recommendation_loop(bot: Bot) -> None:
@@ -4098,11 +4702,40 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
 
+    was_existing_user = db.get_user(message.from_user.id) is not None
     db.add_user(message.from_user.id, message.from_user.full_name)
+    # Ensure default notification settings exist so daily 20:00 recommendations work for new users.
+    try:
+        db.get_notification_settings(message.from_user.id)
+    except Exception:
+        logging.exception("notif: failed to ensure notification settings for user=%s", message.from_user.id)
     payload = parse_start_payload(message.text)
     web_action = parse_web_action_payload(payload)
     serial_id = parse_serial_payload(payload)
     movie_id = parse_movie_payload(payload)
+    referrer_id = parse_referral_payload(payload)
+
+    if referrer_id and not was_existing_user:
+        if db.add_referral(referrer_id, message.from_user.id):
+            count = db.count_referrals(referrer_id)
+            try:
+                await message.bot.send_message(
+                    chat_id=referrer_id,
+                    text=f"🎁 Yangi do'st qo'shildi! ({min(3, count)}/3)\n3 ta do'st = 7 kunlik PRO.",
+                )
+            except (TelegramBadRequest, TelegramForbiddenError):
+                pass
+            if count >= 3 and not db.is_referral_rewarded(referrer_id):
+                db.mark_referral_rewarded(referrer_id)
+                new_until = db.extend_pro_days(referrer_id, 7, note="Referral bonus (3 do'st)")
+                if db.get_notification_settings(referrer_id).get("pro_updates"):
+                    try:
+                        await message.bot.send_message(
+                            chat_id=referrer_id,
+                            text=f"💎 Tabriklaymiz! Sizga 7 kunlik PRO berildi.\n⏳ Amal qiladi: {new_until}",
+                        )
+                    except (TelegramBadRequest, TelegramForbiddenError):
+                        pass
     if web_action:
         if await dispatch_web_action(message, state, web_action, {"action": web_action}):
             return
@@ -4112,7 +4745,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             await state.update_data(pending_serial_id=serial_id)
             await ask_for_subscription(message, channels)
             return
-        sent = await send_serial_selector_by_id(message, serial_id)
+        sent = await send_serial_selector_by_id(message, serial_id, compact=True)
         if sent:
             return
     elif movie_id:
@@ -4121,6 +4754,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             await state.update_data(pending_movie_id=movie_id)
             await ask_for_subscription(message, channels)
             return
+        await message.answer("🎥 Kino yuklanmoqda...")
         try:
             sent = await send_movie_by_id(message, movie_id)
         except (TelegramBadRequest, TelegramForbiddenError, ValueError):
@@ -4131,9 +4765,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     admin = db.is_admin(message.from_user.id)
     first_name = (message.from_user.first_name or "foydalanuvchi").strip()
     await message.answer(
-        f"Assalomu alaykum, {first_name}!\n\n"
-        "🎬 Kino kodini yuboring yoki menyudan foydalaning.\n"
-        f"🍿 Tavsiya uchun: {BTN_RECOMMEND}",
+        f"🎬 Assalomu alaykum, {first_name}!\n\n"
+        "MirTopKinoBot ga xush kelibsiz 🍿\n\n"
+        "📥 Kino ko'rish uchun:\n"
+        "Kino kodini yuboring yoki menyudan foydalaning",
         reply_markup=main_menu_kb(admin),
     )
 
@@ -4186,13 +4821,15 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
         state_data = await state.get_data()
         pending_serial_id = str(state_data.get("pending_serial_id") or "").strip()
         pending_movie_id = str(state_data.get("pending_movie_id") or "").strip()
+        pending_movie_preview_id = str(state_data.get("pending_movie_preview_id") or "").strip()
+        pending_code = str(state_data.get("pending_code") or "").strip()
         if pending_serial_id and callback.message:
             cleaned_state = dict(state_data)
             cleaned_state.pop("pending_serial_id", None)
             await state.set_data(cleaned_state)
             sent = await send_serial_selector_by_id(callback.message, pending_serial_id, user.id)
             if sent:
-                await callback.answer("✅ Tasdiqlandi")
+                await callback.answer("✅ Obuna tasdiqlandi!")
                 return
         if pending_movie_id and callback.message:
             cleaned_state = dict(state_data)
@@ -4203,12 +4840,47 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
             except (TelegramBadRequest, TelegramForbiddenError, ValueError):
                 sent = False
             if sent:
-                await callback.answer("✅ Tasdiqlandi")
+                await callback.answer("✅ Obuna tasdiqlandi!")
                 return
-        await callback.message.answer(
-            "✅ Obuna tasdiqlandi.\nKod yuboring."
-        )
-        await callback.answer("✅ Tasdiqlandi")
+        if pending_movie_preview_id and callback.message:
+            cleaned_state = dict(state_data)
+            cleaned_state.pop("pending_movie_preview_id", None)
+            await state.set_data(cleaned_state)
+            try:
+                sent = await send_movie_preview_by_id(callback.message, pending_movie_preview_id, user.id)
+            except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                sent = False
+            if sent:
+                await callback.answer("✅ Obuna tasdiqlandi!")
+                return
+        if pending_code and callback.message:
+            cleaned_state = dict(state_data)
+            cleaned_state.pop("pending_code", None)
+            await state.set_data(cleaned_state)
+            raw = str(pending_code or "").strip()
+            code = normalize_code(raw)
+            movie = db.get_movie(code) or (db.get_movie(raw) if code != raw else None)
+            if not movie and code.isdigit():
+                movie = db.get_movie(f"k{code}") or db.get_movie(f"K{code}")
+            if movie:
+                try:
+                    sent = await send_movie_preview_by_id(callback.message, str(movie.get("id") or ""), user.id)
+                except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                    sent = False
+                if sent:
+                    await callback.answer("✅ Obuna tasdiqlandi!")
+                    return
+            serial = db.get_serial_by_code(code) or (db.get_serial_by_code(raw) if code != raw else None)
+            if serial:
+                try:
+                    sent = await send_serial_selector_by_id(callback.message, str(serial.get("id") or ""), user.id)
+                except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+                    sent = False
+                if sent:
+                    await callback.answer("✅ Obuna tasdiqlandi!")
+                    return
+        await callback.message.answer("✅ Obuna tasdiqlandi.\nKod yuboring.")
+        await callback.answer("✅ Obuna tasdiqlandi!")
     else:
         await callback.message.answer(
             "Hali barcha kanallarga kirmagansiz.",
@@ -4222,7 +4894,7 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("🛠 Admin panel ochildi.", reply_markup=admin_menu_kb())
+    await message.answer("🛠 Admin Panel", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
@@ -4230,7 +4902,7 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     await state.clear()
-    await message.answer("🏠 Asosiy menyu.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+    await message.answer("🏠 Menyu", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
 
 
 @router.message(F.text.in_({BTN_SETTINGS, "Sozlamalar"}))
@@ -4239,12 +4911,23 @@ async def open_settings(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(
-        "⚙️ Sozlamalar bo'limi.",
+        "⚙️ Sozlamalar",
         reply_markup=settings_menu_kb(
             db.is_admin(message.from_user.id),
             db.is_pro_active(message.from_user.id),
         ),
     )
+
+
+@router.message(F.text.in_({BTN_MINI_APP, "Ilova"}))
+async def open_mini_app(message: Message) -> None:
+    if not message.from_user:
+        return
+    launch_url = get_mini_app_launch_url()
+    if not launch_url:
+        await message.answer("Ilova havolasi hali sozlanmagan.")
+        return
+    await message.answer("📱 Ilovani ochish uchun tugmani bosing.", reply_markup=build_mini_app_open_kb())
 
 
 @router.message(F.text.in_({BTN_PRO_BUY, "Pro olish"}))
@@ -4262,6 +4945,28 @@ async def pro_buy(message: Message) -> None:
         )
         return
     await message.answer(build_pro_offer_text(message.from_user.id), reply_markup=build_pro_purchase_kb())
+
+
+@router.message(F.text.in_({BTN_FREE_PRO, "Bepul PRO olish"}))
+async def free_pro_info(message: Message) -> None:
+    if not message.from_user:
+        return
+    username = await get_bot_username(message.bot)
+    if not username:
+        await message.answer("Bot username topilmadi. Keyinroq urinib ko'ring.")
+        return
+    link = build_start_deeplink(username, f"ref_{message.from_user.id}")
+    count = db.count_referrals(message.from_user.id)
+    rewarded = db.is_referral_rewarded(message.from_user.id)
+    progress = f"{min(3, count)}/3"
+    status = "✅ Bonus berilgan" if rewarded else "⏳ Bonus kutilmoqda"
+    await message.answer(
+        "🎁 Bepul PRO olish\n\n"
+        "3 ta do'st taklif qiling\n"
+        "7 kunlik PRO oling\n\n"
+        f"📊 Holat: {progress} | {status}\n\n"
+        f"Havola:\n{link}"
+    )
 
 
 @router.callback_query(F.data == "pro_paid")
@@ -4355,7 +5060,7 @@ async def notification_settings(message: Message) -> None:
     if not message.from_user:
         return
     settings = db.get_notification_settings(message.from_user.id)
-    await message.answer("🔔 Bildirishnoma sozlamalari.", reply_markup=build_notification_settings_kb(settings))
+    await message.answer("🔔 Bildirishnomalar", reply_markup=build_notification_settings_kb(settings))
 
 
 @router.message(Command("help"))
@@ -4366,9 +5071,10 @@ async def help_menu(message: Message) -> None:
     await message.answer(
         "❓ Yordam\n\n"
         "🎬 Kino kodini yuboring.\n"
-        f"{BTN_SEARCH_NAME} orqali nom bo'yicha qidiring.\n"
-        f"{BTN_RECOMMEND} orqali tezkor tavsiya oling.\n"
-        f"{BTN_SETTINGS} bo'limida qo'shimcha sozlamalar bor.",
+        f"{BTN_SEARCH_NAME} orqali kino/serial qidiring.\n"
+        f"{BTN_TOP_VIEWED} orqali eng ko'p ko'rilganlarni ko'ring.\n"
+        f"{BTN_RANDOM_MOVIE} orqali tasodifiy kino oling.\n"
+        f"{BTN_SETTINGS} bo'limida sozlamalar bor.",
         reply_markup=settings_menu_kb(
             db.is_admin(message.from_user.id),
             db.is_pro_active(message.from_user.id),
@@ -4387,25 +5093,97 @@ async def notification_toggle(callback: CallbackQuery) -> None:
     await callback.answer("✅ Yangilandi")
 
 
-@router.message(F.text.in_({BTN_RECOMMEND, "Kino tavsiyasi", "Tavsiya"}))
-async def recommend_movie(message: Message) -> None:
+def extract_movie_id_from_markup(markup: InlineKeyboardMarkup | None) -> str:
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return ""
+    for row in markup.inline_keyboard:
+        for btn in row:
+            data = str(getattr(btn, "callback_data", "") or "")
+            if data.startswith("open:movie:"):
+                return data.split(":", 2)[2].strip()
+            if data.startswith("fav:") and ":movie:" in data:
+                parts = data.split(":")
+                if len(parts) >= 4:
+                    return str(parts[3]).strip()
+    return ""
+
+
+def pick_random_public_movie_id(*, exclude_movie_id: str = "", max_attempts: int = 6) -> str | None:
+    exclude_movie_id = str(exclude_movie_id or "").strip()
+    for _ in range(max(1, int(max_attempts or 1))):
+        movie = db.get_random_public_movie()
+        movie_id = str((movie or {}).get("id") or "").strip()
+        if movie_id and movie_id != exclude_movie_id:
+            return movie_id
+    return None
+
+
+@router.callback_query(F.data == "rand:again")
+async def random_movie_again(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    current_movie_id = extract_movie_id_from_markup(callback.message.reply_markup)
+    movie_id = pick_random_public_movie_id(exclude_movie_id=current_movie_id)
+    if not movie_id:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    reaction = db.get_reaction_summary("movie", movie_id)
+    is_favorite = db.is_favorite(callback.from_user.id, "movie", movie_id)
+    caption = build_random_movie_caption(movie, reaction)
+    try:
+        await callback.message.edit_text(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
+    except TelegramBadRequest:
+        await callback.message.answer(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "reco:again")
+async def daily_reco_again(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    current_movie_id = extract_movie_id_from_markup(callback.message.reply_markup)
+    movie_id = pick_random_public_movie_id(exclude_movie_id=current_movie_id)
+    if not movie_id:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    movie = db.get_movie_by_id(movie_id)
+    if not movie:
+        await callback.answer("Kino topilmadi", show_alert=True)
+        return
+    reaction = db.get_reaction_summary("movie", movie_id)
+    is_favorite = db.is_favorite(callback.from_user.id, "movie", movie_id)
+    caption = build_daily_reco_caption(movie, reaction)
+    try:
+        await callback.message.edit_text(caption, reply_markup=build_daily_reco_kb(movie_id, is_favorite))
+    except TelegramBadRequest:
+        await callback.message.answer(caption, reply_markup=build_daily_reco_kb(movie_id, is_favorite))
+    await callback.answer()
+
+
+@router.message(F.text.in_({BTN_RANDOM_MOVIE, "Kino tavsiyasi", "Tavsiya"}))
+async def random_movie(message: Message) -> None:
     if not message.from_user:
         return
     ok, channels = await ensure_subscription(message.from_user.id, message.bot)
     if not ok:
+        await state.update_data(pending_code=text)
         await ask_for_subscription(message, channels)
         return
-    movie_id = get_or_pick_daily_reco_movie_id(daily_reco_local_date())
+    movie = db.get_random_public_movie()
+    movie_id = str((movie or {}).get("id") or "").strip()
     if not movie_id:
         await message.answer("📭 Hozircha tavsiya qiladigan kino topilmadi.")
         return
-    await message.answer("🍿 Tavsiya:")
-    try:
-        sent = await send_movie_by_id(message, movie_id, message.from_user.id)
-    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
-        sent = False
-    if not sent:
-        await message.answer("❌ Tavsiya yuborilmadi. Keyinroq urinib ko'ring.")
+    reaction = db.get_reaction_summary("movie", movie_id)
+    is_favorite = db.is_favorite(message.from_user.id, "movie", movie_id)
+    caption = build_random_movie_caption(movie or {}, reaction)
+    await message.answer(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
 
 
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
@@ -4416,12 +5194,15 @@ async def top_viewed_content(message: Message) -> None:
     if not ok:
         await ask_for_subscription(message, channels)
         return
-    items = db.list_top_viewed_content(limit=20)
+    raw_items = db.list_top_viewed_content(limit=60)
+    items = [row for row in raw_items if str(row.get("content_type") or "") == "movie"][:20]
+    if not items:
+        items = raw_items[:20]
     kb = build_search_results_kb(items)
     if not kb:
-        await message.answer("🏆 Top ko'rilganlar hozircha bo'sh.")
+        await message.answer("🔥 TOP kinolar hozircha bo'sh.")
         return
-    await message.answer("🏆 Top ko'rilganlar:", reply_markup=kb)
+    await message.answer("🔥 TOP kinolar", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_CREATE_AD, "E'lon berish"}))
@@ -4880,7 +5661,7 @@ async def ad_channel_list(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "adch:delete_menu")
-async def ad_channel_delete_menu(callback: CallbackQuery) -> None:
+async def ad_channel_delete_menu( callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message or not db.is_admin(callback.from_user.id):
         await callback.answer()
         return
@@ -5275,6 +6056,46 @@ async def delete_channel(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("serial_page:"))
+async def serial_page(callback: CallbackQuery) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3 or not parts[1] or not parts[2].isdigit():
+        await callback.answer("Noto'g'ri so'rov")
+        return
+    serial_id = parts[1]
+    page = int(parts[2])
+
+    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
+    if not ok:
+        await ask_for_subscription(callback.message, channels)
+        await callback.answer("Obuna kerak")
+        return
+
+    serial = db.get_serial(serial_id)
+    episodes = db.list_serial_episodes(serial_id)
+    if not serial or not episodes:
+        await callback.answer("Serial topilmadi", show_alert=True)
+        return
+
+    is_favorite = db.is_favorite(callback.from_user.id, "serial", serial_id)
+    episode_numbers = [row["episode_number"] for row in episodes]
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=build_serial_episodes_kb(
+                serial_id=serial_id,
+                episode_numbers=episode_numbers,
+                is_favorite=is_favorite,
+                page=page,
+            )
+        )
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("serial_ep:"))
 async def send_serial_episode(callback: CallbackQuery) -> None:
     if not callback.from_user or not callback.message:
@@ -5290,10 +6111,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
 
     ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
     if not ok:
-        await callback.message.answer(
-            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
-            reply_markup=build_subscribe_keyboard(channels),
-        )
+        await ask_for_subscription(callback.message, channels)
         await callback.answer("Obuna kerak")
         return
 
@@ -5354,17 +6172,18 @@ async def add_movie_code(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
     text = (message.text or "").strip()
+    code = normalize_code(text)
     if is_cancel_text(text):
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
-    if not text:
+    if not code:
         await message.answer("Kod bo'sh bo'lmasin.")
         return
-    if db.code_exists(text):
+    if db.code_exists(code) or (code != text and db.code_exists(text)):
         await message.answer("⚠️ Bu kod allaqachon band. Boshqa kod yuboring.")
         return
-    await state.update_data(code=text)
+    await state.update_data(code=code)
     await state.set_state(AddMovieState.waiting_title)
     await message.answer("📝 Kino nomini yuboring:")
 
@@ -5492,6 +6311,11 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
     await state.clear()
     if created:
         saved_movie = db.get_movie(movie.code)
+        if saved_movie:
+            try:
+                await maybe_post_movie_to_channel(message.bot, str(saved_movie.get("id") or ""))
+            except Exception:
+                logging.exception("content_post: failed to post movie to channel")
         delivered, failed = await notify_requesters_for_content(
             bot=message.bot,
             content_type="movie",
@@ -5542,17 +6366,18 @@ async def add_serial_code(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
     text = (message.text or "").strip()
+    code = normalize_code(text)
     if is_cancel_text(text):
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
-    if not text:
+    if not code:
         await message.answer("Kod bo'sh bo'lmasin.")
         return
-    if db.code_exists(text):
+    if db.code_exists(code) or (code != text and db.code_exists(text)):
         await message.answer("⚠️ Bu kod allaqachon band. Boshqa kod yuboring.")
         return
-    await state.update_data(code=text)
+    await state.update_data(code=code)
     await state.set_state(AddSerialState.waiting_title)
     await message.answer("📝 Serial nomini yuboring:")
 
@@ -5952,18 +6777,19 @@ async def delete_movie_finish(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
     text = (message.text or "").strip()
+    code = normalize_code(text)
     if is_cancel_text(text):
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
         return
-    if not text:
+    if not code:
         await message.answer("Kod yuboring.")
         return
     deleted_types: list[str] = []
-    if db.delete_movie(text):
+    if db.delete_movie(code) or (code != text and db.delete_movie(text)):
         deleted_types.append("kino")
 
-    serial = db.get_serial_by_code(text)
+    serial = db.get_serial_by_code(code) or ((db.get_serial_by_code(text) if code != text else None))
     if serial and db.delete_serial(serial["id"]):
         deleted_types.append("serial")
 
@@ -6001,13 +6827,14 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
         return
 
     code = normalize_code(text)
-    movie = db.get_movie(code)
+    movie = db.get_movie(code) or (db.get_movie(text) if code != text else None)
     if movie:
+        stored_code = str(movie.get("code") or code).strip() or code
         current_title = str(movie.get("title") or "")
         current_description = str(movie.get("description") or "")
         await state.update_data(
             edit_type="movie",
-            edit_code=code,
+            edit_code=stored_code,
             movie_title=current_title,
             movie_description=current_description,
             movie_media_type=str(movie.get("media_type") or ""),
@@ -6029,15 +6856,16 @@ async def edit_content_code(message: Message, state: FSMContext) -> None:
         )
         return
 
-    serial = db.get_serial_by_code(code)
+    serial = db.get_serial_by_code(code) or (db.get_serial_by_code(text) if code != text else None)
     if serial:
         serial_id = str(serial["id"])
         next_episode = db.get_next_serial_episode_number(serial_id)
-        serial_title = str(serial.get("title") or code)
+        stored_code = str(serial.get("code") or code).strip() or code
+        serial_title = str(serial.get("title") or stored_code)
         await state.update_data(
             edit_type="serial",
             serial_id=serial_id,
-            serial_code=code,
+            serial_code=stored_code,
             serial_title=serial_title,
             next_episode=next_episode,
             episodes_added=0,
@@ -6599,7 +7427,7 @@ async def requests_dashboard(message: Message) -> None:
 
     lines.append("")
     lines.append("✅ Oxirgi yopilganlar:")
-    if fulfilled_topicds:
+    if fulfilled_topics:
         for row in fulfilled_topics:
             req_type = "kod" if row.get("request_type") == "code" else "qidiruv"
             query = str(row.get("query_text") or row.get("normalized_query") or "-")
@@ -6651,7 +7479,7 @@ async def search_by_name_start(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(SearchState.waiting_query)
     await message.answer(
-        "Nom yoki kod yozing.",
+        "🔎 Kino yoki serial nomini yozing",
         reply_markup=cancel_kb(),
     )
 
@@ -6695,7 +7523,7 @@ async def search_by_name_finish(message: Message, state: FSMContext) -> None:
     await state.clear()
     kb = build_search_results_kb(results)
     await message.answer(
-        f"{len(results)} ta natija topildi.",
+        f"🎬 {len(results)} ta natija topildi",
         reply_markup=kb,
     )
 
@@ -6706,10 +7534,10 @@ async def list_favorites(message: Message) -> None:
         return
     favorites = db.list_favorites(message.from_user.id, limit=100)
     if not favorites:
-        await message.answer("Saqlanganlar bo'sh.")
+        await message.answer("⭐ Saqlangan kinolar yo'q")
         return
     await message.answer(
-        f"Saqlanganlar: {len(favorites)} ta",
+        "⭐ Saqlangan kinolar",
         reply_markup=build_favorites_kb(favorites),
     )
 
@@ -6788,43 +7616,31 @@ async def favorite_toggle(callback: CallbackQuery) -> None:
         return
 
     current_text = (callback.message.text or "").strip().lower()
-    if current_text.startswith("⭐ sevimlilar ro'yxati"):
+    if current_text.startswith("⭐ sevimlilar ro'yxati") or current_text.startswith("⭐ saqlangan"):
         favorites = db.list_favorites(callback.from_user.id, limit=100)
         if favorites:
             await callback.message.edit_text(
-                f"⭐ Sevimlilar ro'yxati ({len(favorites)} ta):",
+                "⭐ Saqlangan kinolar",
                 reply_markup=build_favorites_kb(favorites),
             )
         else:
-            await callback.message.edit_text("📭 Sevimlilar ro'yxati bo'sh.")
+            await callback.message.edit_text("⭐ Saqlangan kinolar yo'q")
         return
 
     try:
         if content_type == "movie":
-            is_favorite = db.is_favorite(callback.from_user.id, "movie", content_ref)
-            reaction = db.get_reaction_summary("movie", content_ref)
-            await callback.message.edit_reply_markup(
-                reply_markup=build_movie_actions_kb(
-                    content_ref,
-                    is_favorite,
-                    likes=int(reaction.get("likes") or 0),
-                    dislikes=int(reaction.get("dislikes") or 0),
-                ),
-            )
+            await refresh_movie_card_message(callback.message, content_ref, callback.from_user.id)
         else:
             serial = db.get_serial(content_ref)
             if serial:
                 episodes = db.list_serial_episodes(content_ref)
                 episode_numbers = [row["episode_number"] for row in episodes]
                 is_favorite = db.is_favorite(callback.from_user.id, "serial", content_ref)
-                reaction = db.get_reaction_summary("serial", content_ref)
                 await callback.message.edit_reply_markup(
                     reply_markup=build_serial_episodes_kb(
                         serial_id=content_ref,
                         episode_numbers=episode_numbers,
                         is_favorite=is_favorite,
-                        likes=int(reaction.get("likes") or 0),
-                        dislikes=int(reaction.get("dislikes") or 0),
                     )
                 )
     except TelegramBadRequest:
@@ -6842,26 +7658,20 @@ async def reaction_toggle(callback: CallbackQuery) -> None:
         return
     _, reaction_name, content_type, content_ref = parts
     summary = db.set_reaction(callback.from_user.id, content_type, content_ref, reaction_name)
-    is_favorite = db.is_favorite(callback.from_user.id, content_type, content_ref)
     try:
         if content_type == "movie":
-            await callback.message.edit_reply_markup(
-                reply_markup=build_movie_actions_kb(
-                    content_ref,
-                    is_favorite,
-                    likes=int(summary.get("likes") or 0),
-                    dislikes=int(summary.get("dislikes") or 0),
-                )
-            )
+            await refresh_movie_card_message(callback.message, content_ref, callback.from_user.id)
+            try:
+                await sync_movie_channel_posts(callback.bot, content_ref)
+            except Exception:
+                logging.exception("content_post: failed to sync movie posts (movie_id=%s)", content_ref)
         elif content_type == "serial":
             episodes = db.list_serial_episodes(content_ref)
             await callback.message.edit_reply_markup(
                 reply_markup=build_serial_episodes_kb(
                     serial_id=content_ref,
                     episode_numbers=[row["episode_number"] for row in episodes],
-                    is_favorite=is_favorite,
-                    likes=int(summary.get("likes") or 0),
-                    dislikes=int(summary.get("dislikes") or 0),
+                    is_favorite=db.is_favorite(callback.from_user.id, "serial", content_ref),
                 )
             )
     except TelegramBadRequest:
@@ -6879,8 +7689,8 @@ async def generate_movie_shorts_callback(callback: CallbackQuery) -> None:
     await callback.answer("Qisqa video funksiyasi o'chirilgan.", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("open:"))
-async def open_content_from_callback(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("preview:"))
+async def preview_content_from_callback(callback: CallbackQuery, state: FSMContext) -> None:
     if not callback.from_user or not callback.message:
         await callback.answer()
         return
@@ -6895,10 +7705,58 @@ async def open_content_from_callback(callback: CallbackQuery) -> None:
 
     ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
     if not ok:
-        await callback.message.answer(
-            "❗ Avval barcha majburiy kanallarga obuna bo'ling.",
-            reply_markup=build_subscribe_keyboard(channels),
-        )
+        try:
+            if content_type == "movie":
+                await state.update_data(pending_movie_preview_id=content_ref)
+            else:
+                await state.update_data(pending_serial_id=content_ref)
+        except Exception:
+            pass
+        await ask_for_subscription(callback.message, channels)
+        await callback.answer("Obuna kerak")
+        return
+
+    try:
+        if content_type == "movie":
+            sent = await send_movie_preview_by_id(callback.message, content_ref, callback.from_user.id)
+            if not sent:
+                await callback.answer("Kino topilmadi", show_alert=True)
+                return
+        else:
+            sent = await send_serial_selector_by_id(callback.message, content_ref, callback.from_user.id)
+            if not sent:
+                await callback.answer("Serial topilmadi", show_alert=True)
+                return
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        await callback.answer("Xatolik", show_alert=True)
+        return
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("open:"))
+async def open_content_from_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if not callback.from_user or not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":", 2)
+    if len(parts) != 3:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+    _, content_type, content_ref = parts
+    if content_type not in {"movie", "serial"} or not content_ref:
+        await callback.answer("Noto'g'ri so'rov")
+        return
+
+    ok, channels = await ensure_subscription(callback.from_user.id, callback.bot)
+    if not ok:
+        try:
+            if content_type == "movie":
+                await state.update_data(pending_movie_id=content_ref)
+            else:
+                await state.update_data(pending_serial_id=content_ref)
+        except Exception:
+            pass
+        await ask_for_subscription(callback.message, channels)
         await callback.answer("Obuna kerak")
         return
 
@@ -6908,6 +7766,16 @@ async def open_content_from_callback(callback: CallbackQuery) -> None:
             if not sent:
                 await callback.answer("Kino topilmadi", show_alert=True)
                 return
+            # If this was a movie preview card, refresh its caption to show updated views.
+            try:
+                if callback.message.reply_markup and any(
+                    (btn.callback_data or "").startswith(f"react:like:movie:{content_ref}")
+                    for row in callback.message.reply_markup.inline_keyboard
+                    for btn in row
+                ):
+                    await refresh_movie_preview_message(callback.message, content_ref, callback.from_user.id)
+            except Exception:
+                pass
         else:
             sent = await send_serial_selector_by_id(callback.message, content_ref, callback.from_user.id)
             if not sent:
@@ -7122,13 +7990,7 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if text in {BTN_FAVORITES.lower(), "⭐ sevimlilarim", "⭐ saqlangan"}:
         await list_favorites(message)
         return
-    if text in {"🔥 trend", "🔥 trending", "trending", "trend"}:
-        await message.answer(
-            "ℹ️ Menyu yangilandi.",
-            reply_markup=main_menu_kb(bool(message.from_user and db.is_admin(message.from_user.id))),
-        )
-        return
-    if text in {BTN_TOP_VIEWED.lower(), "🏆 top ko'rilganlar", "🏆 top"}:
+    if text in {"🔥 trend", "🔥 trending", "trending", "trend", "🔥 top kinolar", "top kinolar"}:
         await top_viewed_content(message)
         return
     if text in {BTN_NOTIFICATIONS.lower(), "🔔 bildirishnomalar", "🔔 sozlama"}:
@@ -7232,11 +8094,12 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_CANCEL.lower(),
         BTN_SERIAL_DONE.lower(),
         BTN_SEARCH_NAME.lower(),
-        BTN_RECOMMEND.lower(),
+        BTN_RANDOM_MOVIE.lower(),
         BTN_FAVORITES.lower(),
         BTN_TOP_VIEWED.lower(),
         BTN_SETTINGS.lower(),
         BTN_NOTIFICATIONS.lower(),
+        BTN_FREE_PRO.lower(),
         BTN_PRO_BUY.lower(),
         BTN_PRO_STATUS.lower(),
         BTN_HELP.lower(),
@@ -7301,10 +8164,12 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         return
 
     code = normalize_code(text)
-    movie = db.get_movie(code)
+    movie = db.get_movie(code) or (db.get_movie(text) if code != text else None)
+    if not movie and code.isdigit():
+        movie = db.get_movie(f"k{code}") or db.get_movie(f"K{code}")
     if movie:
         try:
-            sent = await send_movie_by_id(message, str(movie["id"]), message.from_user.id)
+            sent = await send_movie_preview_by_id(message, str(movie["id"]), message.from_user.id)
             if not sent:
                 db.log_request(message.from_user.id, code, "not_found")
                 await message.answer("❌ Kino topilmadi.")
@@ -7322,7 +8187,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
             )
         return
 
-    serial = db.get_serial_by_code(code)
+    serial = db.get_serial_by_code(code) or (db.get_serial_by_code(text) if code != text else None)
     if not serial:
         db.log_request(message.from_user.id, code, "not_found")
         await state.update_data(
@@ -7330,8 +8195,9 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
             pending_request_type="code",
         )
         await message.answer(
-            "❌ Bunday kod topilmadi.\n"
-            "Xohlasangiz so'rov qoldiring, kontent qo'shilsa bot sizga yuboradi.",
+            "❌ Bunday kino topilmadi\n\n"
+            "Xohlasangiz so'rov qoldiring.\n"
+            "Kontent qo'shilganda sizga yuboramiz.",
             reply_markup=build_not_found_request_kb(),
         )
         return

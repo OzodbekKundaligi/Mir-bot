@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -310,6 +311,38 @@ class Database:
             upsert=True,
         )
 
+    def get_daily_reco_state(self) -> dict[str, Any]:
+        doc = self.settings.find_one({"_id": "config"}, {"daily_reco_state": 1}) or {}
+        state = doc.get("daily_reco_state") or {}
+        return state if isinstance(state, dict) else {}
+
+    def set_daily_reco_pick(self, pick_date: str, movie_id: str) -> None:
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "daily_reco_state.pick_date": pick_date.strip()[:20],
+                    "daily_reco_state.movie_id": movie_id.strip(),
+                    "daily_reco_state.picked_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
+    def set_daily_reco_sent(self, sent_date: str) -> None:
+        self.settings.update_one(
+            {"_id": "config"},
+            {
+                "$set": {
+                    "daily_reco_state.sent_date": sent_date.strip()[:20],
+                    "daily_reco_state.sent_at": utc_now_iso(),
+                    "updated_at": utc_now_iso(),
+                }
+            },
+            upsert=True,
+        )
+
     def add_user(self, tg_id: int, full_name: str) -> None:
         now = utc_now_iso()
         self.users.update_one(
@@ -334,6 +367,7 @@ class Database:
                     "new_content": True,
                     "pro_updates": True,
                     "ads_updates": True,
+                    "daily_reco": True,
                     "created_at": now,
                 }
             },
@@ -492,21 +526,40 @@ class Database:
                     "new_content": True,
                     "pro_updates": True,
                     "ads_updates": True,
+                    "daily_reco": True,
                     "created_at": now,
                 }
             },
             upsert=True,
         )
         doc = self.notification_settings.find_one({"user_tg_id": user_tg_id})
-        return self._doc_without_object_id(doc) or {
+        normalized = self._doc_without_object_id(doc) or {
             "user_tg_id": user_tg_id,
             "new_content": True,
             "pro_updates": True,
             "ads_updates": True,
+            "daily_reco": True,
         }
+        missing: dict[str, Any] = {}
+        for key, default in {
+            "new_content": True,
+            "pro_updates": True,
+            "ads_updates": True,
+            "daily_reco": True,
+        }.items():
+            if key not in normalized:
+                missing[key] = default
+                normalized[key] = default
+        if missing:
+            self.notification_settings.update_one(
+                {"user_tg_id": user_tg_id},
+                {"$set": {**missing, "updated_at": now}},
+                upsert=True,
+            )
+        return normalized
 
     def toggle_notification_setting(self, user_tg_id: int, key: str) -> dict[str, Any]:
-        if key not in {"new_content", "pro_updates", "ads_updates"}:
+        if key not in {"new_content", "pro_updates", "ads_updates", "daily_reco"}:
             return self.get_notification_settings(user_tg_id)
         current = self.get_notification_settings(user_tg_id)
         next_value = not bool(current.get(key))
@@ -516,6 +569,25 @@ class Database:
             upsert=True,
         )
         return self.get_notification_settings(user_tg_id)
+
+    def list_daily_reco_user_ids(self) -> list[int]:
+        user_ids: list[int] = []
+        cursor = self.notification_settings.find(
+            {
+                "$or": [
+                    {"daily_reco": True},
+                    {"daily_reco": {"$exists": False}},
+                ]
+            },
+            {"user_tg_id": 1},
+        )
+        for doc in cursor:
+            if not doc:
+                continue
+            user_id = doc.get("user_tg_id")
+            if isinstance(user_id, int):
+                user_ids.append(user_id)
+        return user_ids
 
     def add_required_channel(
         self,
@@ -704,6 +776,32 @@ class Database:
         if limit and limit > 0:
             cursor = cursor.limit(limit)
         return [self._doc_without_object_id(doc) for doc in cursor if doc]
+
+    def get_random_public_movie(self) -> dict[str, Any] | None:
+        pipeline = [
+            {"$match": {"visibility": "public"}},
+            {"$sample": {"size": 1}},
+            {
+                "$project": {
+                    "code": 1,
+                    "title": 1,
+                    "description": 1,
+                    "media_type": 1,
+                    "file_id": 1,
+                    "stream_sources": 1,
+                    "visibility": 1,
+                    "year": 1,
+                    "quality": 1,
+                    "genres": 1,
+                    "preview_media_type": 1,
+                    "preview_file_id": 1,
+                    "downloads": 1,
+                    "views": 1,
+                }
+            },
+        ]
+        doc = next(iter(self.movies.aggregate(pipeline)), None)
+        return self._doc_without_object_id(doc) if doc else None
 
     def list_serials(self, limit: int | None = None) -> list[dict[str, Any]]:
         cursor = self.serials.find(
@@ -1914,40 +2012,41 @@ def parse_admin_ids(value: str) -> list[int]:
     return result
 
 
-BTN_ADMIN_PANEL = "🛠 Panel"
-BTN_MINI_APP = "Ilova"
+BTN_ADMIN_PANEL = "🛠 Admin panel"
+BTN_MINI_APP = "🧩 Mini ilova"
 MINI_APP_MENU_LINK = os.getenv("MINI_APP_MENU_LINK", "https://t.me/MirTopKinoBot/mirtopkino").strip()
-BTN_SUBS = "📢 Obuna"
-BTN_ADD_MOVIE = "➕ Kino"
-BTN_ADD_SERIAL = "📺 Serial"
-BTN_DEL_MOVIE = "🗑 O'chirish"
-BTN_EDIT_CONTENT = "✏️ Tahrir"
-BTN_RANDOM_CODES = "🎲 Kod"
-BTN_LIST_MOVIES = "📚 Baza"
-BTN_STATS = "📊 Stat"
-BTN_ADD_ADMIN = "👤 Admin"
-BTN_BROADCAST = "📣 Xabar"
-BTN_REQUESTS = "📥 So'rov"
-BTN_BACK = "🏠 Menyu"
+BTN_SUBS = "📢 Majburiy obuna"
+BTN_ADD_MOVIE = "➕ Kino qo'shish"
+BTN_ADD_SERIAL = "📺 Serial qo'shish"
+BTN_DEL_MOVIE = "🗑 Kontent o'chirish"
+BTN_EDIT_CONTENT = "✏️ Kontentni tahrirlash"
+BTN_RANDOM_CODES = "🎲 Random kod"
+BTN_LIST_MOVIES = "📚 Baza ro'yxati"
+BTN_STATS = "📊 Statistika"
+BTN_ADD_ADMIN = "👤 Admin qo'shish"
+BTN_BROADCAST = "📣 Xabar yuborish"
+BTN_REQUESTS = "📥 So'rovlar"
+BTN_BACK = "🏠 Asosiy menyu"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_SERIAL_DONE = "✅ Serialni yakunlash"
-BTN_SEARCH_NAME = "🔎 Qidirish"
-BTN_FAVORITES = "⭐ Saqlangan"
-BTN_TOP_VIEWED = "🏆 Top"
+BTN_SEARCH_NAME = "🔎 Nom bo'yicha qidirish"
+BTN_RECOMMEND = "🍿 Kino tavsiyasi"
+BTN_FAVORITES = "⭐ Sevimlilar"
+BTN_TOP_VIEWED = "🏆 Top ko'rilganlar"
 BTN_SETTINGS = "⚙️ Sozlamalar"
-BTN_NOTIFICATIONS = "🔔 Sozlama"
-BTN_PRO_BUY = "👑 PRO"
-BTN_PRO_STATUS = "💎 Holat"
-BTN_CREATE_AD = "📢 E'lon"
-BTN_MY_ADS = "🗂 Postlarim"
+BTN_NOTIFICATIONS = "🔔 Bildirishnomalar"
+BTN_PRO_BUY = "👑 PRO olish"
+BTN_PRO_STATUS = "💎 PRO holatim"
+BTN_CREATE_AD = "📢 E'lon berish"
+BTN_MY_ADS = "🗂 E'lonlarim"
 BTN_HELP = "❓ Yordam"
-BTN_PRO_MANAGE = "👑 PRO boshqaruv"
-BTN_PRO_PRICE = "💰 PRO narx"
-BTN_PRO_DURATION = "⏳ PRO muddat"
-BTN_PRO_REQUESTS = "💳 PRO so'rov"
-BTN_CONTENT_MODE = "🔐 Media"
-BTN_ADS = "📰 Postlar"
-BTN_AD_CHANNELS = "📡 Kanallar"
+BTN_PRO_MANAGE = "👑 PRO boshqarish"
+BTN_PRO_PRICE = "💰 PRO narxi"
+BTN_PRO_DURATION = "⏳ PRO muddati"
+BTN_PRO_REQUESTS = "💳 PRO so'rovlar"
+BTN_CONTENT_MODE = "🔐 Media rejimi"
+BTN_ADS = "📰 E'lonlar"
+BTN_AD_CHANNELS = "📡 E'lon kanallari"
 BTN_YES = "✅ Ha"
 BTN_NO = "❌ Yo'q"
 BTN_CONFIRM = "✅ Tasdiqlash"
@@ -1956,42 +2055,73 @@ BOT_SIGNATURE = "@MirTopKinoBot"
 
 LEGACY_MENU_TEXTS = {
     "🛠 admin panel",
+    "🛠 panel",
     "ilova",
+    "🧩 mini ilova",
     "⬅️ ortga",
+    "🏠 menyu",
+    "🏠 asosiy menyu",
     "🔎 nom bo'yicha qidirish",
+    "🔎 qidirish",
     "⭐ sevimlilarim",
+    "⭐ saqlangan",
     "🔥 trend",
     "🔥 trending",
     "trending",
     "trend",
     "🏆 top ko'rilganlar",
+    "🏆 top",
     "⚙️ sozlamalar",
     "🔔 bildirishnomalar",
+    "🔔 sozlama",
     "👑 pro olish",
+    "👑 pro",
     "💎 pro holatim",
+    "💎 holat",
     "❓ yordam",
     "📢 e'lon berish",
+    "📢 e'lon",
     "🗂 e'lonlarim",
+    "🗂 postlarim",
     "📢 majburiy obuna",
+    "📢 obuna",
     "➕ kino qo'shish",
+    "➕ kino",
     "📺 serial qo'shish",
+    "📺 serial",
     "🗑 kino o'chirish",
+    "🗑 o'chirish",
     "✏️ kontent tahrirlash",
+    "✏️ tahrir",
     "📚 kino va serial ro'yxati",
+    "📚 baza",
     "📊 statistika",
+    "📊 stat",
     "📥 so'rovlar",
+    "📥 so'rov",
     "📣 habar yuborish",
     "📣 xabar yuborish",
+    "📣 xabar",
     "👤 admin qo'shish",
+    "👤 admin",
     "🎲 random kod",
+    "🎲 kod",
     "👑 pro boshqarish",
+    "👑 pro boshqaruv",
     "💰 pro narxi",
+    "💰 pro narx",
     "⏳ pro muddati",
+    "⏳ pro muddat",
     "💳 pro so'rovlar",
+    "💳 pro so'rov",
     "🔐 media",
+    "🔐 media rejimi",
     "media rejimi",
     "📰 e'lonlar",
+    "📰 postlar",
     "📡 e'lon kanalari",
+    "📡 kanallar",
+    "📡 e'lon kanallari",
 }
 
 
@@ -2053,7 +2183,7 @@ def build_mini_app_open_kb(payload: str | None = None) -> InlineKeyboardMarkup |
         return None
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Ilovani ochish", url=launch_url)]
+            [InlineKeyboardButton(text="🧩 Mini ilovani ochish", url=launch_url)]
         ]
     )
 
@@ -2183,10 +2313,11 @@ def is_confirm_text(value: str | None) -> bool:
 
 
 def main_menu_kb(is_admin: bool) -> ReplyKeyboardMarkup | ReplyKeyboardRemove:
+    del is_admin
     buttons: list[list[KeyboardButton]] = [
-        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_TOP_VIEWED)],
-        [KeyboardButton(text=BTN_FAVORITES), KeyboardButton(text=BTN_PRO_BUY)],
-        [KeyboardButton(text=BTN_SETTINGS)],
+        [KeyboardButton(text=BTN_SEARCH_NAME), KeyboardButton(text=BTN_RECOMMEND)],
+        [KeyboardButton(text=BTN_TOP_VIEWED), KeyboardButton(text=BTN_FAVORITES)],
+        [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_PRO_BUY)],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
@@ -2302,6 +2433,7 @@ def build_notification_settings_kb(settings: dict[str, Any]) -> InlineKeyboardMa
             [InlineKeyboardButton(text=f"{state_text('new_content')} Yangi kino", callback_data="notif:new_content")],
             [InlineKeyboardButton(text=f"{state_text('pro_updates')} Pro xabarlari", callback_data="notif:pro_updates")],
             [InlineKeyboardButton(text=f"{state_text('ads_updates')} E'lon holati", callback_data="notif:ads_updates")],
+            [InlineKeyboardButton(text=f"{state_text('daily_reco')} 🍿 Kunlik tavsiya", callback_data="notif:daily_reco")],
         ]
     )
 
@@ -2361,7 +2493,7 @@ def build_subscribe_keyboard(channels: list[dict[str, Any]]) -> InlineKeyboardMa
                     url=f"https://t.me/{ref[1:]}",
                 )
             )
-    builder.row(InlineKeyboardButton(text="✅ Tekshirish", callback_data="check_sub"))
+    builder.row(InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub"))
     return builder.as_markup()
 
 
@@ -3628,6 +3760,11 @@ PRO_PAYMENT_LINK_2 = os.getenv(
     "https://danatlar.uz/Sara_Kinolar_o1",
 ).strip()
 
+DAILY_RECO_ENABLED = os.getenv("DAILY_RECO_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+DAILY_RECO_AT = os.getenv("DAILY_RECO_AT", "20:00").strip() or "20:00"
+DAILY_RECO_UTC_OFFSET_MINUTES = int(os.getenv("DAILY_RECO_UTC_OFFSET_MINUTES", "300") or 300)
+DAILY_RECO_UTC_OFFSET_MINUTES = max(-720, min(840, DAILY_RECO_UTC_OFFSET_MINUTES))
+
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi. .env faylga BOT_TOKEN yozing.")
 
@@ -3693,6 +3830,166 @@ async def ask_for_subscription(message: Message, channels: list[dict[str, Any]])
         title = ch["title"] or ch["channel_ref"]
         text_lines.append(f"• {title}")
     await message.answer("\n".join(text_lines), reply_markup=build_subscribe_keyboard(channels))
+
+
+def parse_hhmm(value: str, *, default_hour: int = 20, default_minute: int = 0) -> tuple[int, int]:
+    match = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", value or "")
+    if not match:
+        return default_hour, default_minute
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return default_hour, default_minute
+    return hour, minute
+
+
+def daily_reco_local_now() -> datetime:
+    return datetime.now(UTC) + timedelta(minutes=DAILY_RECO_UTC_OFFSET_MINUTES)
+
+
+def daily_reco_local_date() -> str:
+    return daily_reco_local_now().date().isoformat()
+
+
+def get_or_pick_daily_reco_movie_id(local_date: str) -> str | None:
+    state = db.get_daily_reco_state()
+    movie_id = str(state.get("movie_id") or "").strip()
+    pick_date = str(state.get("pick_date") or "").strip()
+    if movie_id and pick_date == local_date:
+        movie = db.get_movie_by_id(movie_id)
+        if movie and str(movie.get("visibility") or "") == "public":
+            return movie_id
+    movie = db.get_random_public_movie()
+    if not movie:
+        return None
+    picked_id = str(movie.get("id") or "").strip()
+    if picked_id:
+        db.set_daily_reco_pick(local_date, picked_id)
+    return picked_id or None
+
+
+async def send_daily_recommendation(bot: Bot) -> None:
+    local_date = daily_reco_local_date()
+    state = db.get_daily_reco_state()
+    if str(state.get("sent_date") or "").strip() == local_date:
+        return
+
+    movie_id = get_or_pick_daily_reco_movie_id(local_date)
+    if not movie_id:
+        logging.info("daily_reco: no movies to recommend")
+        return
+
+    movie = db.get_movie_by_id(movie_id)
+    if not movie or str(movie.get("visibility") or "") != "public":
+        logging.info("daily_reco: picked movie is missing or not public (movie_id=%s)", movie_id)
+        return
+
+    user_ids = db.list_daily_reco_user_ids()
+    if not user_ids:
+        return
+
+    reaction = db.get_reaction_summary("movie", movie_id)
+    caption = append_meta_to_caption(
+        build_movie_caption(movie.get("title"), movie.get("description")),
+        movie.get("year") if isinstance(movie.get("year"), int) else None,
+        str(movie.get("quality") or ""),
+        [str(g) for g in movie.get("genres", []) if str(g).strip()],
+    )
+    caption = f"🍿 Kun tavsiyasi\n\n{caption}" if caption else "🍿 Kun tavsiyasi"
+    caption = append_reaction_stats_to_caption(caption, reaction.get("likes"), reaction.get("dislikes"))
+
+    actions_kb = build_movie_actions_kb(
+        movie_id,
+        is_favorite=False,
+        likes=int(reaction.get("likes") or 0),
+        dislikes=int(reaction.get("dislikes") or 0),
+    )
+
+    media_type = str(movie.get("media_type") or "")
+    file_id = str(movie.get("file_id") or "")
+    protect_content = content_should_be_protected(None)
+    reply_markup = actions_kb
+    if media_type == "stream" or not file_id:
+        reply_markup = merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie_id}"), actions_kb)
+
+    success = 0
+    failed = 0
+    logging.info("daily_reco: sending movie_id=%s to %s users", movie_id, len(user_ids))
+    for user_id in user_ids:
+        try:
+            if media_type == "stream" or not file_id:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text=append_signature(caption),
+                    reply_markup=reply_markup,
+                    protect_content=protect_content,
+                )
+            else:
+                await send_media_to_chat(
+                    bot=bot,
+                    chat_ref=str(user_id),
+                    media_type=media_type,
+                    file_id=file_id,
+                    caption=caption,
+                    reply_markup=reply_markup,
+                )
+            success += 1
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(float(exc.retry_after))
+            try:
+                if media_type == "stream" or not file_id:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=append_signature(caption),
+                        reply_markup=reply_markup,
+                        protect_content=protect_content,
+                    )
+                else:
+                    await send_media_to_chat(
+                        bot=bot,
+                        chat_ref=str(user_id),
+                        media_type=media_type,
+                        file_id=file_id,
+                        caption=caption,
+                        reply_markup=reply_markup,
+                    )
+                success += 1
+            except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                failed += 1
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            failed += 1
+
+    db.set_daily_reco_sent(local_date)
+    logging.info("daily_reco: done success=%s failed=%s date=%s movie_id=%s", success, failed, local_date, movie_id)
+
+
+async def daily_recommendation_loop(bot: Bot) -> None:
+    if not DAILY_RECO_ENABLED:
+        logging.info("daily_reco: disabled (DAILY_RECO_ENABLED=0)")
+        return
+
+    hour, minute = parse_hhmm(DAILY_RECO_AT)
+    logging.info(
+        "daily_reco: enabled at %02d:%02d (utc_offset_minutes=%s)",
+        hour,
+        minute,
+        DAILY_RECO_UTC_OFFSET_MINUTES,
+    )
+
+    while True:
+        now_local = daily_reco_local_now()
+        target = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now_local >= target:
+            target += timedelta(days=1)
+        sleep_seconds = max(1.0, (target - now_local).total_seconds())
+        await asyncio.sleep(sleep_seconds)
+        try:
+            await send_daily_recommendation(bot)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("daily_reco: unexpected error")
+        await asyncio.sleep(2.0)
 
 
 async def dispatch_web_action(
@@ -3834,7 +4131,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     admin = db.is_admin(message.from_user.id)
     first_name = (message.from_user.first_name or "foydalanuvchi").strip()
     await message.answer(
-        f"Salom, {first_name}\nKino kodini yuboring.",
+        f"Assalomu alaykum, {first_name}!\n\n"
+        "🎬 Kino kodini yuboring yoki menyudan foydalaning.\n"
+        f"🍿 Tavsiya uchun: {BTN_RECOMMEND}",
         reply_markup=main_menu_kb(admin),
     )
 
@@ -3923,7 +4222,7 @@ async def open_admin_panel(message: Message, state: FSMContext) -> None:
     if not message.from_user or not guard_admin(message):
         return
     await state.clear()
-    await message.answer("Panel ochildi.", reply_markup=admin_menu_kb())
+    await message.answer("🛠 Admin panel ochildi.", reply_markup=admin_menu_kb())
 
 
 @router.message(F.text.in_({BTN_BACK, "Ortga"}))
@@ -3931,7 +4230,7 @@ async def back_to_main(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     await state.clear()
-    await message.answer("Menyu.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
+    await message.answer("🏠 Asosiy menyu.", reply_markup=main_menu_kb(db.is_admin(message.from_user.id)))
 
 
 @router.message(F.text.in_({BTN_SETTINGS, "Sozlamalar"}))
@@ -3940,7 +4239,7 @@ async def open_settings(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(
-        "Sozlamalar.",
+        "⚙️ Sozlamalar bo'limi.",
         reply_markup=settings_menu_kb(
             db.is_admin(message.from_user.id),
             db.is_pro_active(message.from_user.id),
@@ -4056,7 +4355,7 @@ async def notification_settings(message: Message) -> None:
     if not message.from_user:
         return
     settings = db.get_notification_settings(message.from_user.id)
-    await message.answer("Bildirishnoma sozlamalari.", reply_markup=build_notification_settings_kb(settings))
+    await message.answer("🔔 Bildirishnoma sozlamalari.", reply_markup=build_notification_settings_kb(settings))
 
 
 @router.message(Command("help"))
@@ -4065,10 +4364,11 @@ async def help_menu(message: Message) -> None:
     if not message.from_user:
         return
     await message.answer(
-        "Yordam\n\n"
-        "1. Kino kodini yuboring.\n"
-        "2. Qidirish tugmasi bilan nom bo'yicha qidiring.\n"
-        "3. Qo'shimcha bo'limlar Sozlamalarda.",
+        "❓ Yordam\n\n"
+        "🎬 Kino kodini yuboring.\n"
+        f"{BTN_SEARCH_NAME} orqali nom bo'yicha qidiring.\n"
+        f"{BTN_RECOMMEND} orqali tezkor tavsiya oling.\n"
+        f"{BTN_SETTINGS} bo'limida qo'shimcha sozlamalar bor.",
         reply_markup=settings_menu_kb(
             db.is_admin(message.from_user.id),
             db.is_pro_active(message.from_user.id),
@@ -4087,6 +4387,27 @@ async def notification_toggle(callback: CallbackQuery) -> None:
     await callback.answer("✅ Yangilandi")
 
 
+@router.message(F.text.in_({BTN_RECOMMEND, "Kino tavsiyasi", "Tavsiya"}))
+async def recommend_movie(message: Message) -> None:
+    if not message.from_user:
+        return
+    ok, channels = await ensure_subscription(message.from_user.id, message.bot)
+    if not ok:
+        await ask_for_subscription(message, channels)
+        return
+    movie_id = get_or_pick_daily_reco_movie_id(daily_reco_local_date())
+    if not movie_id:
+        await message.answer("📭 Hozircha tavsiya qiladigan kino topilmadi.")
+        return
+    await message.answer("🍿 Tavsiya:")
+    try:
+        sent = await send_movie_by_id(message, movie_id, message.from_user.id)
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        sent = False
+    if not sent:
+        await message.answer("❌ Tavsiya yuborilmadi. Keyinroq urinib ko'ring.")
+
+
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
 async def top_viewed_content(message: Message) -> None:
     if not message.from_user:
@@ -4098,9 +4419,9 @@ async def top_viewed_content(message: Message) -> None:
     items = db.list_top_viewed_content(limit=20)
     kb = build_search_results_kb(items)
     if not kb:
-        await message.answer("Top bo'sh.")
+        await message.answer("🏆 Top ko'rilganlar hozircha bo'sh.")
         return
-    await message.answer("Top.", reply_markup=kb)
+    await message.answer("🏆 Top ko'rilganlar:", reply_markup=kb)
 
 
 @router.message(F.text.in_({BTN_CREATE_AD, "E'lon berish"}))
@@ -6776,29 +7097,29 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
     text = (message.text or "").strip().lower()
-    if text in {BTN_ADMIN_PANEL.lower(), "🛠 admin panel"}:
+    if text in {BTN_ADMIN_PANEL.lower(), "🛠 admin panel", "🛠 panel"}:
         await open_admin_panel(message, state)
         return
-    if text == BTN_MINI_APP.lower():
+    if text in {BTN_MINI_APP.lower(), "ilova"}:
         launch_url = get_mini_app_launch_url()
         if launch_url:
             await message.answer(
-                "Ilovani ochish uchun tugmani bosing.",
+                "🧩 Mini ilovani ochish uchun tugmani bosing.",
                 reply_markup=build_mini_app_open_kb(),
             )
         else:
             await message.answer("Ilova havolasi hali sozlanmagan.")
         return
-    if text in {BTN_BACK.lower(), "⬅️ ortga"}:
+    if text in {BTN_BACK.lower(), "⬅️ ortga", "🏠 menyu"}:
         await back_to_main(message, state)
         return
     if text in {BTN_SETTINGS.lower(), "⚙️ sozlamalar"}:
         await open_settings(message, state)
         return
-    if text in {BTN_SEARCH_NAME.lower(), "🔎 nom bo'yicha qidirish"}:
+    if text in {BTN_SEARCH_NAME.lower(), "🔎 nom bo'yicha qidirish", "🔎 qidirish"}:
         await search_by_name_start(message, state)
         return
-    if text in {BTN_FAVORITES.lower(), "⭐ sevimlilarim"}:
+    if text in {BTN_FAVORITES.lower(), "⭐ sevimlilarim", "⭐ saqlangan"}:
         await list_favorites(message)
         return
     if text in {"🔥 trend", "🔥 trending", "trending", "trend"}:
@@ -6807,79 +7128,79 @@ async def legacy_menu_router(message: Message, state: FSMContext) -> None:
             reply_markup=main_menu_kb(bool(message.from_user and db.is_admin(message.from_user.id))),
         )
         return
-    if text in {BTN_TOP_VIEWED.lower(), "🏆 top ko'rilganlar"}:
+    if text in {BTN_TOP_VIEWED.lower(), "🏆 top ko'rilganlar", "🏆 top"}:
         await top_viewed_content(message)
         return
-    if text in {BTN_NOTIFICATIONS.lower(), "🔔 bildirishnomalar"}:
+    if text in {BTN_NOTIFICATIONS.lower(), "🔔 bildirishnomalar", "🔔 sozlama"}:
         await notification_settings(message)
         return
     if text in {BTN_HELP.lower(), "❓ yordam"}:
         await help_menu(message)
         return
-    if text in {BTN_PRO_BUY.lower(), "👑 pro olish"}:
+    if text in {BTN_PRO_BUY.lower(), "👑 pro olish", "👑 pro"}:
         await pro_buy(message)
         return
-    if text in {BTN_PRO_STATUS.lower(), "💎 pro holatim"}:
+    if text in {BTN_PRO_STATUS.lower(), "💎 pro holatim", "💎 holat"}:
         await pro_status(message)
         return
-    if text in {BTN_CREATE_AD.lower(), "📢 e'lon berish"}:
+    if text in {BTN_CREATE_AD.lower(), "📢 e'lon berish", "📢 e'lon"}:
         await create_ad_start(message, state)
         return
-    if text in {BTN_MY_ADS.lower(), "🗂 e'lonlarim"}:
+    if text in {BTN_MY_ADS.lower(), "🗂 e'lonlarim", "🗂 postlarim"}:
         await my_ads(message)
         return
-    if text in {BTN_SUBS.lower(), "📢 majburiy obuna"}:
+    if text in {BTN_SUBS.lower(), "📢 majburiy obuna", "📢 obuna"}:
         await mandatory_subscriptions_menu(message)
         return
-    if text in {BTN_ADD_MOVIE.lower(), "➕ kino qo'shish"}:
+    if text in {BTN_ADD_MOVIE.lower(), "➕ kino qo'shish", "➕ kino"}:
         await add_movie_start(message, state)
         return
-    if text in {BTN_ADD_SERIAL.lower(), "📺 serial qo'shish"}:
+    if text in {BTN_ADD_SERIAL.lower(), "📺 serial qo'shish", "📺 serial"}:
         await add_serial_start(message, state)
         return
-    if text in {BTN_DEL_MOVIE.lower(), "🗑 kino o'chirish"}:
+    if text in {BTN_DEL_MOVIE.lower(), "🗑 kino o'chirish", "🗑 o'chirish"}:
         await delete_movie_start(message, state)
         return
-    if text in {BTN_EDIT_CONTENT.lower(), "✏️ kontent tahrirlash"}:
+    if text in {BTN_EDIT_CONTENT.lower(), "✏️ kontent tahrirlash", "✏️ tahrir"}:
         await edit_content_start(message, state)
         return
-    if text in {BTN_LIST_MOVIES.lower(), "📚 kino va serial ro'yxati"}:
+    if text in {BTN_LIST_MOVIES.lower(), "📚 kino va serial ro'yxati", "📚 baza"}:
         await movie_list(message)
         return
-    if text in {BTN_STATS.lower(), "📊 statistika"}:
+    if text in {BTN_STATS.lower(), "📊 statistika", "📊 stat"}:
         await stats(message)
         return
-    if text in {BTN_REQUESTS.lower(), "📥 so'rovlar"}:
+    if text in {BTN_REQUESTS.lower(), "📥 so'rovlar", "📥 so'rov"}:
         await requests_dashboard(message)
         return
-    if text in {BTN_BROADCAST.lower(), "📣 habar yuborish", "📣 xabar yuborish"}:
+    if text in {BTN_BROADCAST.lower(), "📣 habar yuborish", "📣 xabar yuborish", "📣 xabar"}:
         await broadcast_start(message, state)
         return
-    if text in {BTN_ADD_ADMIN.lower(), "👤 admin qo'shish"}:
+    if text in {BTN_ADD_ADMIN.lower(), "👤 admin qo'shish", "👤 admin"}:
         await add_admin_start(message, state)
         return
-    if text in {BTN_RANDOM_CODES.lower(), "🎲 random kod"}:
+    if text in {BTN_RANDOM_CODES.lower(), "🎲 random kod", "🎲 kod"}:
         await random_missing_codes(message)
         return
-    if text in {BTN_PRO_MANAGE.lower(), "👑 pro boshqarish"}:
+    if text in {BTN_PRO_MANAGE.lower(), "👑 pro boshqarish", "👑 pro boshqaruv"}:
         await pro_manage_start(message, state)
         return
-    if text in {BTN_PRO_PRICE.lower(), "💰 pro narxi"}:
+    if text in {BTN_PRO_PRICE.lower(), "💰 pro narxi", "💰 pro narx"}:
         await pro_price_start(message, state)
         return
-    if text in {BTN_PRO_DURATION.lower(), "⏳ pro muddati"}:
+    if text in {BTN_PRO_DURATION.lower(), "⏳ pro muddati", "⏳ pro muddat"}:
         await pro_duration_start(message, state)
         return
-    if text in {BTN_PRO_REQUESTS.lower(), "💳 pro so'rovlar"}:
+    if text in {BTN_PRO_REQUESTS.lower(), "💳 pro so'rovlar", "💳 pro so'rov"}:
         await pro_requests(message)
         return
-    if text in {BTN_CONTENT_MODE.lower(), "media rejimi"}:
+    if text in {BTN_CONTENT_MODE.lower(), "media rejimi", "🔐 media"}:
         await content_mode_menu(message)
         return
-    if text in {BTN_ADS.lower(), "📰 e'lonlar"}:
+    if text in {BTN_ADS.lower(), "📰 e'lonlar", "📰 postlar"}:
         await ads_review(message)
         return
-    if text in {BTN_AD_CHANNELS.lower(), "📡 e'lon kanalari"}:
+    if text in {BTN_AD_CHANNELS.lower(), "📡 e'lon kanalari", "📡 kanallar"}:
         await ad_channels_menu(message)
         return
 
@@ -6911,6 +7232,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         BTN_CANCEL.lower(),
         BTN_SERIAL_DONE.lower(),
         BTN_SEARCH_NAME.lower(),
+        BTN_RECOMMEND.lower(),
         BTN_FAVORITES.lower(),
         BTN_TOP_VIEWED.lower(),
         BTN_SETTINGS.lower(),
@@ -6948,6 +7270,8 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         "serialni yakunlash",
         "bekor qilish",
         "nom bo'yicha qidirish",
+        "kino tavsiyasi",
+        "tavsiya",
         "sevimlilarim",
         "top ko'rilganlar",
         "sozlamalar",
@@ -7029,7 +7353,13 @@ async def main() -> None:
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties())
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
-    await dp.start_polling(bot)
+    daily_task = asyncio.create_task(daily_recommendation_loop(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        daily_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await daily_task
 
 
 if __name__ == "__main__":

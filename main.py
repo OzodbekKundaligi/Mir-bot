@@ -11,11 +11,12 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Any, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.enums import ChatMemberStatus, ContentType
 from aiogram.exceptions import ClientDecodeError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart, StateFilter
@@ -150,6 +151,7 @@ class Database:
     def init_indexes(self) -> None:
         self.admins.create_index("tg_id", unique=True)
         self.users.create_index("tg_id", unique=True)
+        self.users.create_index([("last_active_date", ASCENDING)])
         self.required_channels.create_index("channel_ref", unique=True)
         self.required_channels.create_index([("is_active", ASCENDING), ("created_at", DESCENDING)])
         self.join_requests.create_index([("user_tg_id", ASCENDING), ("channel_ref", ASCENDING)], unique=True)
@@ -355,10 +357,15 @@ class Database:
 
     def add_user(self, tg_id: int, full_name: str) -> None:
         now = utc_now_iso()
+        local_date = daily_reco_local_date()
         self.users.update_one(
             {"tg_id": tg_id},
             {
-                "$set": {"full_name": full_name},
+                "$set": {
+                    "full_name": full_name,
+                    "last_seen_at": now,
+                    "last_active_date": local_date,
+                },
                 "$setOnInsert": {
                     "joined_at": now,
                     "is_pro": False,
@@ -385,6 +392,57 @@ class Database:
             },
             upsert=True,
         )
+
+    def touch_user_activity(self, tg_id: int, full_name: str = "", *, local_date: str | None = None) -> None:
+        """Mark a user as active for the given local date (1 update per user per day)."""
+
+        now = utc_now_iso()
+        local_date = str(local_date or daily_reco_local_date()).strip()
+        if not local_date:
+            local_date = daily_reco_local_date()
+        cleaned_name = str(full_name or "").strip()
+        # Update only when the day changes to avoid heavy write load.
+        self.users.update_one(
+            {"tg_id": int(tg_id), "last_active_date": {"$ne": local_date}},
+            {
+                "$set": {
+                    "full_name": cleaned_name,
+                    "last_seen_at": now,
+                    "last_active_date": local_date,
+                },
+                "$setOnInsert": {
+                    "joined_at": now,
+                    "is_pro": False,
+                    "pro_until": None,
+                    "pro_status": "free",
+                    "pro_note": "",
+                    "referred_by": None,
+                    "referral_rewarded": False,
+                },
+            },
+            upsert=True,
+        )
+        # Ensure notification settings exist for daily recommendations.
+        self.notification_settings.update_one(
+            {"user_tg_id": int(tg_id)},
+            {
+                "$setOnInsert": {
+                    "user_tg_id": int(tg_id),
+                    "new_content": True,
+                    "pro_updates": True,
+                    "ads_updates": True,
+                    "daily_reco": True,
+                    "created_at": now,
+                }
+            },
+            upsert=True,
+        )
+
+    def count_daily_active_users(self, local_date: str) -> int:
+        local_date = str(local_date or "").strip()
+        if not local_date:
+            return 0
+        return int(self.users.count_documents({"last_active_date": local_date}))
 
     def get_user(self, tg_id: int) -> dict[str, Any] | None:
         doc = self.users.find_one(
@@ -4417,7 +4475,14 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     )
     media_type = str(movie.get("media_type") or "")
     file_id = str(movie.get("file_id") or "")
-    if media_type == "stream" or not file_id:
+    # Content mode: "private" means we don't send the actual media in chat.
+    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
+        await message.answer(
+            caption or f"🎬 {movie.get('title') or 'Kino'}",
+            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
+            protect_content=content_should_be_protected(requester_id),
+        )
+    elif media_type == "stream" or not file_id:
         await message.answer(
             caption or f"🎬 {movie.get('title') or 'Kino'}",
             reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
@@ -4456,6 +4521,7 @@ async def notify_requesters_for_content(
         return 0, 0
 
     username = await get_bot_username(bot)
+    private_media_mode = db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE
     grouped_by_user: dict[int, list[dict[str, Any]]] = {}
     for row in matched_requests:
         user_tg_id = row.get("user_tg_id")
@@ -4475,23 +4541,38 @@ async def notify_requesters_for_content(
         request_ids = [str(r.get("id") or "").strip() for r in user_requests if r.get("id")]
         try:
             if content_type == "movie" and movie:
-                caption = append_meta_to_caption(
-                    build_movie_caption(movie.get("title"), movie.get("description")),
-                    movie.get("year") if isinstance(movie.get("year"), int) else None,
-                    str(movie.get("quality") or ""),
-                    [str(g) for g in movie.get("genres", []) if str(g).strip()],
-                )
-                await send_media_to_chat(
-                    bot=bot,
-                    chat_ref=str(user_id),
-                    media_type=str(movie.get("media_type") or ""),
-                    file_id=str(movie.get("file_id") or ""),
-                    caption=caption if caption else None,
-                    reply_markup=build_movie_actions_kb(
-                        str(movie.get("id") or ""),
-                        is_favorite=False,
-                    ),
-                )
+                public_code = format_public_code(code) or code
+                if private_media_mode:
+                    kb: InlineKeyboardMarkup | None = None
+                    if username:
+                        payload_ref = public_code or code or str(movie.get("id") or content_ref)
+                        deeplink = build_start_deeplink(username, f"m_{payload_ref}")
+                        kb = InlineKeyboardMarkup(
+                            inline_keyboard=[[InlineKeyboardButton(text="▶️ Ochish", url=deeplink)]]
+                        )
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {public_code}",
+                        reply_markup=kb,
+                    )
+                else:
+                    caption = append_meta_to_caption(
+                        build_movie_caption(movie.get("title"), movie.get("description")),
+                        movie.get("year") if isinstance(movie.get("year"), int) else None,
+                        str(movie.get("quality") or ""),
+                        [str(g) for g in movie.get("genres", []) if str(g).strip()],
+                    )
+                    await send_media_to_chat(
+                        bot=bot,
+                        chat_ref=str(user_id),
+                        media_type=str(movie.get("media_type") or ""),
+                        file_id=str(movie.get("file_id") or ""),
+                        caption=caption if caption else None,
+                        reply_markup=build_movie_actions_kb(
+                            str(movie.get("id") or ""),
+                            is_favorite=False,
+                        ),
+                    )
             elif content_type == "serial" and serial_id and username:
                 deeplink = build_start_deeplink(username, f"s_{serial_id}")
                 kb = InlineKeyboardMarkup(
@@ -4680,7 +4761,25 @@ if not ADMIN_IDS:
 db = Database(MONGODB_URI, MONGODB_DB)
 db.seed_admins(ADMIN_IDS)
 
+
+class UserActivityMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        user = getattr(event, "from_user", None)
+        if user and not getattr(user, "is_bot", False):
+            try:
+                db.touch_user_activity(int(user.id), str(getattr(user, "full_name", "") or ""))
+            except Exception:
+                logging.exception("activity: failed to touch user=%s", getattr(user, "id", None))
+        return await handler(event, data)
+
+
 router = Router()
+router.message.middleware(UserActivityMiddleware())
 
 
 def guard_admin(message: Message) -> bool:
@@ -6404,7 +6503,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
     try:
         media_type = str(episode.get("media_type") or "")
         file_id = str(episode.get("file_id") or "")
-        if media_type == "stream" or not file_id:
+        if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE or media_type == "stream" or not file_id:
             await callback.message.answer(
                 caption or f"🎬 {serial.get('title') or 'Serial'}",
                 reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"s_{serial_id}"), nav_kb),
@@ -6552,6 +6651,15 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
     if is_cancel_text(message.text):
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
+        return
+
+    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
+        await message.answer(
+            "🔒 Media rejimi hozir Yopiq.\n\n"
+            "Media yuklash/jo'natish uchun:\n"
+            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
+            reply_markup=admin_menu_kb(),
+        )
         return
 
     media = parse_message_media(message)
@@ -6802,6 +6910,15 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
         )
         return
 
+    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
+        await message.answer(
+            "🔒 Media rejimi hozir Yopiq.\n\n"
+            "Qism yuklash/jo'natish uchun:\n"
+            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
+            reply_markup=serial_upload_kb(),
+        )
+        return
+
     media = parse_message_media(message)
     if not media:
         await message.answer(
@@ -6877,6 +6994,15 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
         await message.answer(
             f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
+        )
+        return
+
+    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
+        await message.answer(
+            "🔒 Media rejimi hozir Yopiq.\n\n"
+            "Preview yuklash uchun:\n"
+            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
+            reply_markup=cancel_kb(),
         )
         return
 
@@ -7662,9 +7788,12 @@ async def stats(message: Message) -> None:
     if not message.from_user or not guard_admin(message):
         return
     s = db.stats()
+    today = daily_reco_local_date()
+    today_active = db.count_daily_active_users(today)
     text = (
         "📊 Bot statistikasi:\n"
         f"👥 Foydalanuvchilar: {s['users']}\n"
+        f"📅 Bugun kirganlar: {today_active} ({today})\n"
         f"🎬 Kinolar: {s['movies']}\n"
         f"📺 Seriallar: {s['serials']}\n"
         f"🎞 Serial qismlari: {s['serial_episodes']}\n"

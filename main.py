@@ -2422,8 +2422,8 @@ def build_content_mode_text() -> str:
     return (
         "🔐 Media rejimi\n"
         f"Hozir: {content_mode_label(mode)}\n\n"
-        "🔒 Yopiq — yuklash va jo'natish yopiq\n"
-        "🌐 Ochiq — hammasi ochiq"
+        "🔒 Yopiq — forward/saqlash/copy yopiq\n"
+        "🌐 Ochiq — hammasi erkin"
     )
 
 
@@ -4449,6 +4449,7 @@ async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int
     if requester_id is None and message.from_user and not message.from_user.is_bot:
         requester_id = message.from_user.id
     is_favorite = bool(requester_id and db.is_favorite(requester_id, "movie", resolved_id))
+    protect_content = content_should_be_protected(requester_id)
     caption = build_movie_preview_caption(movie, reaction)
     markup = build_movie_preview_kb(
         resolved_id,
@@ -4461,12 +4462,17 @@ async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int
     preview_file_id = str(movie.get("preview_file_id") or "")
     if preview_media_type == "photo" and preview_file_id:
         try:
-            await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
+            await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup, protect_content=protect_content)
             return True
         except TelegramRetryAfter as exc:
             await asyncio.sleep(float(exc.retry_after))
             try:
-                await message.answer_photo(preview_file_id, caption=caption, reply_markup=markup)
+                await message.answer_photo(
+                    preview_file_id,
+                    caption=caption,
+                    reply_markup=markup,
+                    protect_content=protect_content,
+                )
                 return True
             except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                 pass
@@ -4475,7 +4481,7 @@ async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int
             pass
 
     # Fallback: no poster saved.
-    await message.answer(caption, reply_markup=markup)
+    await message.answer(caption, reply_markup=markup, protect_content=protect_content)
     return True
 
 
@@ -4519,14 +4525,7 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
     )
     media_type = str(movie.get("media_type") or "")
     file_id = str(movie.get("file_id") or "")
-    # Content mode: "private" means we don't send the actual media in chat.
-    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
-        await message.answer(
-            caption or f"🎬 {movie.get('title') or 'Kino'}",
-            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
-            protect_content=content_should_be_protected(requester_id),
-        )
-    elif media_type == "stream" or not file_id:
+    if media_type == "stream" or not file_id:
         await message.answer(
             caption or f"🎬 {movie.get('title') or 'Kino'}",
             reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
@@ -4565,7 +4564,6 @@ async def notify_requesters_for_content(
         return 0, 0
 
     username = await get_bot_username(bot)
-    private_media_mode = db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE
     grouped_by_user: dict[int, list[dict[str, Any]]] = {}
     for row in matched_requests:
         user_tg_id = row.get("user_tg_id")
@@ -4586,37 +4584,23 @@ async def notify_requesters_for_content(
         try:
             if content_type == "movie" and movie:
                 public_code = format_public_code(code) or code
-                if private_media_mode:
-                    kb: InlineKeyboardMarkup | None = None
-                    if username:
-                        payload_ref = public_code or code or str(movie.get("id") or content_ref)
-                        deeplink = build_start_deeplink(username, f"m_{payload_ref}")
-                        kb = InlineKeyboardMarkup(
-                            inline_keyboard=[[InlineKeyboardButton(text="▶️ Ochish", url=deeplink)]]
-                        )
-                    await bot.send_message(
-                        chat_id=user_id,
-                        text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {public_code}",
-                        reply_markup=kb,
-                    )
-                else:
-                    caption = append_meta_to_caption(
-                        build_movie_caption(movie.get("title"), movie.get("description")),
-                        movie.get("year") if isinstance(movie.get("year"), int) else None,
-                        str(movie.get("quality") or ""),
-                        [str(g) for g in movie.get("genres", []) if str(g).strip()],
-                    )
-                    await send_media_to_chat(
-                        bot=bot,
-                        chat_ref=str(user_id),
-                        media_type=str(movie.get("media_type") or ""),
-                        file_id=str(movie.get("file_id") or ""),
-                        caption=caption if caption else None,
-                        reply_markup=build_movie_actions_kb(
-                            str(movie.get("id") or ""),
-                            is_favorite=False,
-                        ),
-                    )
+                caption = append_meta_to_caption(
+                    build_movie_caption(movie.get("title"), movie.get("description")),
+                    movie.get("year") if isinstance(movie.get("year"), int) else None,
+                    str(movie.get("quality") or ""),
+                    [str(g) for g in movie.get("genres", []) if str(g).strip()],
+                )
+                await send_media_to_chat(
+                    bot=bot,
+                    chat_ref=str(user_id),
+                    media_type=str(movie.get("media_type") or ""),
+                    file_id=str(movie.get("file_id") or ""),
+                    caption=caption if caption else None,
+                    reply_markup=build_movie_actions_kb(
+                        str(movie.get("id") or ""),
+                        is_favorite=False,
+                    ),
+                )
             elif content_type == "serial" and serial_id and username:
                 deeplink = build_start_deeplink(username, f"s_{serial_id}")
                 kb = InlineKeyboardMarkup(
@@ -4626,11 +4610,13 @@ async def notify_requesters_for_content(
                     chat_id=user_id,
                     text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {code}",
                     reply_markup=kb,
+                    protect_content=content_should_be_protected(user_id),
                 )
             else:
                 await bot.send_message(
                     chat_id=user_id,
                     text=f"Siz so'ragan kontent qo'shildi: {title}\nKod: {code}",
+                    protect_content=content_should_be_protected(user_id),
                 )
             delivered += 1
             for request_id in request_ids:
@@ -4938,13 +4924,14 @@ async def send_daily_recommendation(bot: Bot) -> None:
 
     async def safe_send_countdown(chat_id: int) -> tuple[int, int] | None:
         async with semaphore:
+            protect_content = content_should_be_protected(chat_id)
             try:
-                msg = await bot.send_message(chat_id=chat_id, text="🍿 3...")
+                msg = await bot.send_message(chat_id=chat_id, text="🍿 3...", protect_content=protect_content)
                 return chat_id, msg.message_id
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(float(exc.retry_after))
                 try:
-                    msg = await bot.send_message(chat_id=chat_id, text="🍿 3...")
+                    msg = await bot.send_message(chat_id=chat_id, text="🍿 3...", protect_content=protect_content)
                     return chat_id, msg.message_id
                 except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                     return None
@@ -5601,7 +5588,11 @@ async def random_movie(message: Message) -> None:
     reaction = db.get_reaction_summary("movie", movie_id)
     is_favorite = db.is_favorite(message.from_user.id, "movie", movie_id)
     caption = build_random_movie_caption(movie or {}, reaction)
-    await message.answer(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
+    await message.answer(
+        caption,
+        reply_markup=build_random_movie_kb(movie_id, is_favorite),
+        protect_content=content_should_be_protected(message.from_user.id),
+    )
 
 
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
@@ -6547,7 +6538,7 @@ async def send_serial_episode(callback: CallbackQuery) -> None:
     try:
         media_type = str(episode.get("media_type") or "")
         file_id = str(episode.get("file_id") or "")
-        if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE or media_type == "stream" or not file_id:
+        if media_type == "stream" or not file_id:
             await callback.message.answer(
                 caption or f"🎬 {serial.get('title') or 'Serial'}",
                 reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"s_{serial_id}"), nav_kb),
@@ -6695,15 +6686,6 @@ async def add_movie_media(message: Message, state: FSMContext) -> None:
     if is_cancel_text(message.text):
         await state.clear()
         await message.answer("❌ Bekor qilindi.", reply_markup=admin_menu_kb())
-        return
-
-    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
-        await message.answer(
-            "🔒 Media rejimi hozir Yopiq.\n\n"
-            "Media yuklash/jo'natish uchun:\n"
-            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
-            reply_markup=admin_menu_kb(),
-        )
         return
 
     media = parse_message_media(message)
@@ -6954,15 +6936,6 @@ async def add_serial_episode(message: Message, state: FSMContext) -> None:
         )
         return
 
-    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
-        await message.answer(
-            "🔒 Media rejimi hozir Yopiq.\n\n"
-            "Qism yuklash/jo'natish uchun:\n"
-            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
-            reply_markup=serial_upload_kb(),
-        )
-        return
-
     media = parse_message_media(message)
     if not media:
         await message.answer(
@@ -7038,15 +7011,6 @@ async def add_serial_preview_media(message: Message, state: FSMContext) -> None:
         await message.answer(
             f"✅ Serial muvaffaqiyatli saqlandi!\n🎞 Jami qismlar: {episodes_added}{notify_text}",
             reply_markup=admin_menu_kb(),
-        )
-        return
-
-    if db.get_bot_settings()["content_mode"] == CONTENT_MODE_PRIVATE:
-        await message.answer(
-            "🔒 Media rejimi hozir Yopiq.\n\n"
-            "Preview yuklash uchun:\n"
-            f"{BTN_CONTENT_MODE} -> 🌐 Ochiq qilib qo'ying.",
-            reply_markup=cancel_kb(),
         )
         return
 

@@ -358,40 +358,57 @@ class Database:
     def add_user(self, tg_id: int, full_name: str) -> None:
         now = utc_now_iso()
         local_date = daily_reco_local_date()
-        self.users.update_one(
-            {"tg_id": tg_id},
-            {
-                "$set": {
-                    "full_name": full_name,
-                    "last_seen_at": now,
-                    "last_active_date": local_date,
+        try:
+            self.users.update_one(
+                {"tg_id": tg_id},
+                {
+                    "$set": {
+                        "full_name": full_name,
+                        "last_seen_at": now,
+                        "last_active_date": local_date,
+                    },
+                    "$setOnInsert": {
+                        "joined_at": now,
+                        "is_pro": False,
+                        "pro_until": None,
+                        "pro_status": "free",
+                        "pro_note": "",
+                        "referred_by": None,
+                        "referral_rewarded": False,
+                    },
                 },
-                "$setOnInsert": {
-                    "joined_at": now,
-                    "is_pro": False,
-                    "pro_until": None,
-                    "pro_status": "free",
-                    "pro_note": "",
-                    "referred_by": None,
-                    "referral_rewarded": False,
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # Another concurrent upsert inserted the doc first.
+            self.users.update_one(
+                {"tg_id": tg_id},
+                {
+                    "$set": {
+                        "full_name": full_name,
+                        "last_seen_at": now,
+                        "last_active_date": local_date,
+                    }
                 },
-            },
-            upsert=True,
-        )
-        self.notification_settings.update_one(
-            {"user_tg_id": tg_id},
-            {
-                "$setOnInsert": {
-                    "user_tg_id": tg_id,
-                    "new_content": True,
-                    "pro_updates": True,
-                    "ads_updates": True,
-                    "daily_reco": True,
-                    "created_at": now,
-                }
-            },
-            upsert=True,
-        )
+            )
+
+        try:
+            self.notification_settings.update_one(
+                {"user_tg_id": tg_id},
+                {
+                    "$setOnInsert": {
+                        "user_tg_id": tg_id,
+                        "new_content": True,
+                        "pro_updates": True,
+                        "ads_updates": True,
+                        "daily_reco": True,
+                        "created_at": now,
+                    }
+                },
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            pass
 
     def touch_user_activity(self, tg_id: int, full_name: str = "", *, local_date: str | None = None) -> None:
         """Mark a user as active for the given local date (1 update per user per day)."""
@@ -2914,8 +2931,7 @@ def build_search_results_kb(items: list[dict[str, Any]]) -> InlineKeyboardMarkup
         if len(label) > 60:
             label = f"{label[:57]}..."
         icon = "🎬" if content_type == "movie" else "📺"
-        action = "preview" if content_type == "movie" else "open"
-        builder.button(text=f"{icon} {label}", callback_data=f"{action}:{content_type}:{content_ref}")
+        builder.button(text=f"{icon} {label}", callback_data=f"open:{content_type}:{content_ref}")
     builder.adjust(1)
     markup = builder.as_markup()
     if not markup.inline_keyboard:
@@ -4246,6 +4262,33 @@ def inline_keyboard_has_prefix(markup: InlineKeyboardMarkup | None, prefix: str)
     return False
 
 
+def message_has_media(message: Message) -> bool:
+    if not message:
+        return False
+    return bool(message.photo or message.video or message.document or message.animation)
+
+
+def split_movie_keyboard_preserved_rows(
+    markup: InlineKeyboardMarkup | None,
+) -> tuple[list[list[InlineKeyboardButton]], list[list[InlineKeyboardButton]]]:
+    """Return (url_rows, other_rows) excluding movie action rows (fav/react)."""
+    url_rows: list[list[InlineKeyboardButton]] = []
+    other_rows: list[list[InlineKeyboardButton]] = []
+    if not markup or not getattr(markup, "inline_keyboard", None):
+        return url_rows, other_rows
+    for row in markup.inline_keyboard:
+        if any(getattr(btn, "url", None) for btn in row):
+            url_rows.append(row)
+            continue
+        # Replace these rows with a freshly built actions keyboard.
+        if any(str(getattr(btn, "callback_data", "") or "").startswith("fav:") for btn in row):
+            continue
+        if any(str(getattr(btn, "callback_data", "") or "").startswith("react:") for btn in row):
+            continue
+        other_rows.append(row)
+    return url_rows, other_rows
+
+
 def detect_movie_card_kind(message: Message) -> str:
     markup = message.reply_markup if message else None
     if inline_keyboard_has_callback(markup, "reco:again"):
@@ -4292,24 +4335,47 @@ async def refresh_movie_card_message(message: Message, movie_id: str, user_id: i
         return
     reaction = db.get_reaction_summary("movie", resolved_id)
     is_favorite = db.is_favorite(user_id, "movie", resolved_id)
+    has_media = message_has_media(message)
     try:
-        if kind == "daily":
+        if kind == "preview":
+            await refresh_movie_preview_message(message, resolved_id, user_id)
+            return
+
+        # Keep legacy text-only daily/random cards as-is (they have "open" + "again" buttons).
+        if kind == "daily" and not has_media and not message.caption and message.text:
             caption = build_daily_reco_caption(movie, reaction)
             await message.edit_text(caption, reply_markup=build_daily_reco_kb(resolved_id, is_favorite))
-        elif kind == "random":
+            return
+        if kind == "random" and not has_media and not message.caption and message.text:
             caption = build_random_movie_caption(movie, reaction)
             await message.edit_text(caption, reply_markup=build_random_movie_kb(resolved_id, is_favorite))
-        elif kind == "preview":
-            await refresh_movie_preview_message(message, resolved_id, user_id)
+            return
+
+        # Media/full cards: refresh caption + actions while preserving any extra rows (rand/reco again, MiniApp url, etc).
+        likes = int(reaction.get("likes") or 0)
+        dislikes = int(reaction.get("dislikes") or 0)
+        actions_kb = build_movie_actions_kb(
+            resolved_id,
+            is_favorite=is_favorite,
+            likes=likes,
+            dislikes=dislikes,
+        )
+        url_rows, other_rows = split_movie_keyboard_preserved_rows(message.reply_markup)
+        merged_kb = InlineKeyboardMarkup(inline_keyboard=[*url_rows, *actions_kb.inline_keyboard, *other_rows])
+
+        caption_full = append_meta_to_caption(
+            build_movie_caption(movie.get("title"), movie.get("description")),
+            movie.get("year") if isinstance(movie.get("year"), int) else None,
+            str(movie.get("quality") or ""),
+            [str(g) for g in movie.get("genres", []) if str(g).strip()],
+        )
+        caption_full = append_views_to_caption(caption_full, safe_int(movie.get("views") or 0))
+        caption_full = append_reaction_stats_to_caption(caption_full, likes, dislikes)
+
+        if has_media or message.caption:
+            await message.edit_caption(caption=clamp_media_caption(caption_full), reply_markup=merged_kb)
         else:
-            await message.edit_reply_markup(
-                reply_markup=build_movie_actions_kb(
-                    resolved_id,
-                    is_favorite=is_favorite,
-                    likes=int(reaction.get("likes") or 0),
-                    dislikes=int(reaction.get("dislikes") or 0),
-                )
-            )
+            await message.edit_text(clamp_media_caption(caption_full, max_len=3900), reply_markup=merged_kb)
     except TelegramBadRequest:
         return
 
@@ -4485,7 +4551,13 @@ async def send_movie_preview_by_id(message: Message, movie_id: str, user_id: int
     return True
 
 
-async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None = None) -> bool:
+async def send_movie_by_id(
+    message: Message,
+    movie_id: str,
+    user_id: int | None = None,
+    *,
+    extra_markup: InlineKeyboardMarkup | None = None,
+) -> bool:
     movie = db.get_movie_by_id(movie_id) or db.get_movie(movie_id)
     if not movie:
         normalized = normalize_code(movie_id)
@@ -4523,23 +4595,58 @@ async def send_movie_by_id(message: Message, movie_id: str, user_id: int | None 
         likes=int(reaction.get("likes") or 0),
         dislikes=int(reaction.get("dislikes") or 0),
     )
+    final_kb = merge_inline_keyboards(actions_kb, extra_markup)
     media_type = str(movie.get("media_type") or "")
     file_id = str(movie.get("file_id") or "")
-    if media_type == "stream" or not file_id:
-        await message.answer(
-            caption or f"🎬 {movie.get('title') or 'Kino'}",
-            reply_markup=merge_inline_keyboards(build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"), actions_kb),
-            protect_content=content_should_be_protected(requester_id),
-        )
-    else:
-        await send_stored_media(
-            message,
-            media_type=media_type,
-            file_id=file_id,
-            caption=caption if caption else None,
-            requester_id=requester_id,
-            reply_markup=actions_kb,
-        )
+    sent_ok = False
+    try:
+        if media_type == "stream" or not file_id:
+            protect_content = content_should_be_protected(requester_id)
+            merged_kb = merge_inline_keyboards(
+                build_mini_app_open_kb(f"m_{movie.get('id') or resolved_id}"),
+                final_kb,
+            )
+            preview_media_type = str(movie.get("preview_media_type") or "")
+            preview_file_id = str(movie.get("preview_file_id") or "")
+            if preview_media_type == "photo" and preview_file_id:
+                try:
+                    await message.answer_photo(
+                        preview_file_id,
+                        caption=clamp_media_caption(caption),
+                        reply_markup=merged_kb,
+                        protect_content=protect_content,
+                    )
+                except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+                    await message.answer(
+                        caption or f"🎬 {movie.get('title') or 'Kino'}",
+                        reply_markup=merged_kb,
+                        protect_content=protect_content,
+                    )
+            else:
+                await message.answer(
+                    caption or f"🎬 {movie.get('title') or 'Kino'}",
+                    reply_markup=merged_kb,
+                    protect_content=protect_content,
+                )
+        else:
+            await send_stored_media(
+                message,
+                media_type=media_type,
+                file_id=file_id,
+                caption=caption if caption else None,
+                requester_id=requester_id,
+                reply_markup=final_kb,
+            )
+        sent_ok = True
+    except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+        # Stored media might be invalid (old file_id, removed content, etc). Fall back to poster/text preview.
+        logging.exception("send_movie_by_id: failed to send media movie_id=%s media_type=%s", resolved_id, media_type)
+        try:
+            sent_ok = await send_movie_preview_by_id(message, resolved_id, requester_id)
+        except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
+            sent_ok = False
+    if not sent_ok:
+        return False
     db.increment_movie_views(resolved_id)
     db.increment_movie_downloads(resolved_id)
     try:
@@ -4879,18 +4986,41 @@ def daily_reco_local_date() -> str:
     return daily_reco_local_now().date().isoformat()
 
 
+def is_daily_reco_movie_sendable(movie: dict[str, Any] | None) -> bool:
+    if not movie:
+        return False
+    if str(movie.get("visibility") or "") != "public":
+        return False
+    media_type = str(movie.get("media_type") or "").strip().lower()
+    file_id = str(movie.get("file_id") or "").strip()
+    if not file_id:
+        return False
+    if media_type == "stream":
+        return False
+    return True
+
+
 def get_or_pick_daily_reco_movie_id(local_date: str) -> str | None:
     state = db.get_daily_reco_state()
     movie_id = str(state.get("movie_id") or "").strip()
     pick_date = str(state.get("pick_date") or "").strip()
     if movie_id and pick_date == local_date:
         movie = db.get_movie_by_id(movie_id)
-        if movie and str(movie.get("visibility") or "") == "public":
+        if is_daily_reco_movie_sendable(movie):
             return movie_id
-    movie = db.get_random_public_movie()
-    if not movie:
-        return None
-    picked_id = str(movie.get("id") or "").strip()
+
+    picked_id = ""
+    # Prefer movies that can be sent as real media (video/document/photo/etc) for the daily broadcast.
+    for _ in range(12):
+        movie = db.get_random_public_movie()
+        if not is_daily_reco_movie_sendable(movie):
+            continue
+        picked_id = str((movie or {}).get("id") or "").strip()
+        if picked_id:
+            break
+    if not picked_id:
+        movie = db.get_random_public_movie()
+        picked_id = str((movie or {}).get("id") or "").strip()
     if picked_id:
         db.set_daily_reco_pick(local_date, picked_id)
     return picked_id or None
@@ -4917,35 +5047,250 @@ async def send_daily_recommendation(bot: Bot) -> None:
         return
 
     reaction = db.get_reaction_summary("movie", movie_id)
-    final_text = build_daily_reco_caption(movie, reaction)
-    final_kb = build_daily_reco_kb(movie_id, is_favorite=False)
+    likes = int(reaction.get("likes") or 0)
+    dislikes = int(reaction.get("dislikes") or 0)
+    final_caption = append_meta_to_caption(
+        build_movie_caption(movie.get("title"), movie.get("description")),
+        movie.get("year") if isinstance(movie.get("year"), int) else None,
+        str(movie.get("quality") or ""),
+        [str(g) for g in movie.get("genres", []) if str(g).strip()],
+    )
+    final_caption = append_views_to_caption(final_caption, safe_int(movie.get("views") or 0))
+    final_caption = append_reaction_stats_to_caption(final_caption, likes, dislikes)
+    final_kb = merge_inline_keyboards(
+        build_movie_actions_kb(movie_id, is_favorite=False, likes=likes, dislikes=dislikes),
+        InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔥 Yana tavsiya", callback_data="reco:again")]]),
+    )
 
     semaphore = asyncio.Semaphore(25)
 
-    async def safe_send_countdown(chat_id: int) -> tuple[int, int] | None:
+    media_type = str(movie.get("media_type") or "").strip().lower()
+    file_id = str(movie.get("file_id") or "").strip()
+
+    async def safe_send_countdown(chat_id: int) -> tuple[int, int, bool] | None:
         async with semaphore:
             protect_content = content_should_be_protected(chat_id)
             try:
+                if media_type == "video":
+                    msg = await bot.send_video(
+                        chat_id=chat_id,
+                        video=file_id,
+                        caption="🍿 3...",
+                        protect_content=protect_content,
+                    )
+                    return chat_id, msg.message_id, True
+                if media_type == "document":
+                    msg = await bot.send_document(
+                        chat_id=chat_id,
+                        document=file_id,
+                        caption="🍿 3...",
+                        protect_content=protect_content,
+                    )
+                    return chat_id, msg.message_id, True
+                if media_type == "photo":
+                    msg = await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=file_id,
+                        caption="🍿 3...",
+                        protect_content=protect_content,
+                    )
+                    return chat_id, msg.message_id, True
+                if media_type == "animation":
+                    msg = await bot.send_animation(
+                        chat_id=chat_id,
+                        animation=file_id,
+                        caption="🍿 3...",
+                        protect_content=protect_content,
+                    )
+                    return chat_id, msg.message_id, True
+                if media_type == "file_id":
+                    try:
+                        msg = await bot.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, True
+                    except TelegramBadRequest:
+                        try:
+                            msg = await bot.send_document(
+                                chat_id=chat_id,
+                                document=file_id,
+                                caption="🍿 3...",
+                                protect_content=protect_content,
+                            )
+                            return chat_id, msg.message_id, True
+                        except TelegramBadRequest:
+                            msg = await bot.send_message(chat_id=chat_id, text="🍿 3...", protect_content=protect_content)
+                            return chat_id, msg.message_id, False
+                if media_type == "telegram_post":
+                    post_data = unpack_post_ref(file_id)
+                    if not post_data:
+                        return None
+                    from_chat_id: int | str = int(post_data[0]) if post_data[0].lstrip("-").isdigit() else post_data[0]
+                    msg = await bot.copy_message(
+                        chat_id=chat_id,
+                        from_chat_id=from_chat_id,
+                        message_id=post_data[1],
+                        caption="🍿 3...",
+                        protect_content=protect_content,
+                    )
+                    return chat_id, msg.message_id, message_has_media(msg)
+                if media_type == "link":
+                    post_data = parse_telegram_post_link(file_id)
+                    if post_data:
+                        from_chat_id: int | str = (
+                            int(post_data[0]) if post_data[0].lstrip("-").isdigit() else post_data[0]
+                        )
+                        msg = await bot.copy_message(
+                            chat_id=chat_id,
+                            from_chat_id=from_chat_id,
+                            message_id=post_data[1],
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, message_has_media(msg)
+                # Fallback to text countdown if the movie can't be sent as media for some reason.
                 msg = await bot.send_message(chat_id=chat_id, text="🍿 3...", protect_content=protect_content)
-                return chat_id, msg.message_id
+                return chat_id, msg.message_id, False
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(float(exc.retry_after))
                 try:
+                    if media_type == "video":
+                        msg = await bot.send_video(
+                            chat_id=chat_id,
+                            video=file_id,
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, True
+                    if media_type == "document":
+                        msg = await bot.send_document(
+                            chat_id=chat_id,
+                            document=file_id,
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, True
+                    if media_type == "photo":
+                        msg = await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=file_id,
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, True
+                    if media_type == "animation":
+                        msg = await bot.send_animation(
+                            chat_id=chat_id,
+                            animation=file_id,
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, True
+                    if media_type == "file_id":
+                        try:
+                            msg = await bot.send_video(
+                                chat_id=chat_id,
+                                video=file_id,
+                                caption="🍿 3...",
+                                protect_content=protect_content,
+                            )
+                            return chat_id, msg.message_id, True
+                        except TelegramBadRequest:
+                            try:
+                                msg = await bot.send_document(
+                                    chat_id=chat_id,
+                                    document=file_id,
+                                    caption="🍿 3...",
+                                    protect_content=protect_content,
+                                )
+                                return chat_id, msg.message_id, True
+                            except TelegramBadRequest:
+                                msg = await bot.send_message(
+                                    chat_id=chat_id,
+                                    text="🍿 3...",
+                                    protect_content=protect_content,
+                                )
+                                return chat_id, msg.message_id, False
+                    if media_type == "telegram_post":
+                        post_data = unpack_post_ref(file_id)
+                        if not post_data:
+                            return None
+                        from_chat_id: int | str = (
+                            int(post_data[0]) if post_data[0].lstrip("-").isdigit() else post_data[0]
+                        )
+                        msg = await bot.copy_message(
+                            chat_id=chat_id,
+                            from_chat_id=from_chat_id,
+                            message_id=post_data[1],
+                            caption="🍿 3...",
+                            protect_content=protect_content,
+                        )
+                        return chat_id, msg.message_id, message_has_media(msg)
+                    if media_type == "link":
+                        post_data = parse_telegram_post_link(file_id)
+                        if post_data:
+                            from_chat_id: int | str = (
+                                int(post_data[0]) if post_data[0].lstrip("-").isdigit() else post_data[0]
+                            )
+                            msg = await bot.copy_message(
+                                chat_id=chat_id,
+                                from_chat_id=from_chat_id,
+                                message_id=post_data[1],
+                                caption="🍿 3...",
+                                protect_content=protect_content,
+                            )
+                            return chat_id, msg.message_id, message_has_media(msg)
                     msg = await bot.send_message(chat_id=chat_id, text="🍿 3...", protect_content=protect_content)
-                    return chat_id, msg.message_id
+                    return chat_id, msg.message_id, False
                 except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                     return None
             except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                 return None
 
-    async def safe_edit_text(chat_id: int, message_id: int, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
+    async def safe_edit_countdown(
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        is_media: bool,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> None:
         async with semaphore:
             try:
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+                if is_media:
+                    await bot.edit_message_caption(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        caption=text,
+                        reply_markup=reply_markup,
+                    )
+                else:
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                    )
             except TelegramRetryAfter as exc:
                 await asyncio.sleep(float(exc.retry_after))
                 try:
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
+                    if is_media:
+                        await bot.edit_message_caption(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            caption=text,
+                            reply_markup=reply_markup,
+                        )
+                    else:
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            text=text,
+                            reply_markup=reply_markup,
+                        )
                 except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
                     return
             except (TelegramBadRequest, TelegramForbiddenError, ClientDecodeError):
@@ -4953,7 +5298,7 @@ async def send_daily_recommendation(bot: Bot) -> None:
 
     logging.info("daily_reco: sending countdown movie_id=%s to %s users", movie_id, len(user_ids))
     sent_refs = await asyncio.gather(*(safe_send_countdown(user_id) for user_id in user_ids))
-    targets: list[tuple[int, int]] = []
+    targets: list[tuple[int, int, bool]] = []
     for item in sent_refs:
         if not item:
             continue
@@ -4962,11 +5307,26 @@ async def send_daily_recommendation(bot: Bot) -> None:
         return
 
     await asyncio.sleep(0.7)
-    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, "🍿 2...") for chat_id, msg_id in targets))
+    await asyncio.gather(
+        *(safe_edit_countdown(chat_id, msg_id, "🍿 2...", is_media=is_media) for chat_id, msg_id, is_media in targets)
+    )
     await asyncio.sleep(0.7)
-    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, "🍿 1...") for chat_id, msg_id in targets))
+    await asyncio.gather(
+        *(safe_edit_countdown(chat_id, msg_id, "🍿 1...", is_media=is_media) for chat_id, msg_id, is_media in targets)
+    )
     await asyncio.sleep(0.7)
-    await asyncio.gather(*(safe_edit_text(chat_id, msg_id, final_text, reply_markup=final_kb) for chat_id, msg_id in targets))
+    await asyncio.gather(
+        *(
+            safe_edit_countdown(
+                chat_id,
+                msg_id,
+                clamp_media_caption(final_caption) if is_media else clamp_media_caption(final_caption, max_len=3900),
+                is_media=is_media,
+                reply_markup=final_kb,
+            )
+            for chat_id, msg_id, is_media in targets
+        )
+    )
 
     db.set_daily_reco_sent(local_date)
     logging.info("daily_reco: done date=%s movie_id=%s sent=%s", local_date, movie_id, len(targets))
@@ -5252,7 +5612,7 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
             cleaned_state.pop("pending_movie_preview_id", None)
             await state.set_data(cleaned_state)
             try:
-                sent = await send_movie_preview_by_id(callback.message, pending_movie_preview_id, user.id)
+                sent = await send_movie_by_id(callback.message, pending_movie_preview_id, user.id)
             except (TelegramBadRequest, TelegramForbiddenError, ValueError):
                 sent = False
             if sent:
@@ -5269,7 +5629,7 @@ async def check_subscription(callback: CallbackQuery, state: FSMContext) -> None
                 movie = db.get_movie(f"k{code}") or db.get_movie(f"K{code}")
             if movie:
                 try:
-                    sent = await send_movie_preview_by_id(callback.message, str(movie.get("id") or ""), user.id)
+                    sent = await send_movie_by_id(callback.message, str(movie.get("id") or ""), user.id)
                 except (TelegramBadRequest, TelegramForbiddenError, ValueError):
                     sent = False
                 if sent:
@@ -5533,17 +5893,20 @@ async def random_movie_again(callback: CallbackQuery) -> None:
     if not movie_id:
         await callback.answer("Kino topilmadi", show_alert=True)
         return
-    movie = db.get_movie_by_id(movie_id)
-    if not movie:
+    try:
+        sent = await send_movie_by_id(
+            callback.message,
+            movie_id,
+            callback.from_user.id,
+            extra_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎲 Yana random", callback_data="rand:again")]]
+            ),
+        )
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        sent = False
+    if not sent:
         await callback.answer("Kino topilmadi", show_alert=True)
         return
-    reaction = db.get_reaction_summary("movie", movie_id)
-    is_favorite = db.is_favorite(callback.from_user.id, "movie", movie_id)
-    caption = build_random_movie_caption(movie, reaction)
-    try:
-        await callback.message.edit_text(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
-    except TelegramBadRequest:
-        await callback.message.answer(caption, reply_markup=build_random_movie_kb(movie_id, is_favorite))
     await callback.answer()
 
 
@@ -5557,24 +5920,28 @@ async def daily_reco_again(callback: CallbackQuery) -> None:
     if not movie_id:
         await callback.answer("Kino topilmadi", show_alert=True)
         return
-    movie = db.get_movie_by_id(movie_id)
-    if not movie:
+    try:
+        sent = await send_movie_by_id(
+            callback.message,
+            movie_id,
+            callback.from_user.id,
+            extra_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🔥 Yana tavsiya", callback_data="reco:again")]]
+            ),
+        )
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        sent = False
+    if not sent:
         await callback.answer("Kino topilmadi", show_alert=True)
         return
-    reaction = db.get_reaction_summary("movie", movie_id)
-    is_favorite = db.is_favorite(callback.from_user.id, "movie", movie_id)
-    caption = build_daily_reco_caption(movie, reaction)
-    try:
-        await callback.message.edit_text(caption, reply_markup=build_daily_reco_kb(movie_id, is_favorite))
-    except TelegramBadRequest:
-        await callback.message.answer(caption, reply_markup=build_daily_reco_kb(movie_id, is_favorite))
     await callback.answer()
 
 
 @router.message(F.text.in_({BTN_RANDOM_MOVIE, "Kino tavsiyasi", "Tavsiya"}))
-async def random_movie(message: Message) -> None:
+async def random_movie(message: Message, state: FSMContext) -> None:
     if not message.from_user:
         return
+    text = (message.text or "").strip()
     ok, channels = await ensure_subscription(message.from_user.id, message.bot)
     if not ok:
         await state.update_data(pending_code=text)
@@ -5585,14 +5952,19 @@ async def random_movie(message: Message) -> None:
     if not movie_id:
         await message.answer("📭 Hozircha tavsiya qiladigan kino topilmadi.")
         return
-    reaction = db.get_reaction_summary("movie", movie_id)
-    is_favorite = db.is_favorite(message.from_user.id, "movie", movie_id)
-    caption = build_random_movie_caption(movie or {}, reaction)
-    await message.answer(
-        caption,
-        reply_markup=build_random_movie_kb(movie_id, is_favorite),
-        protect_content=content_should_be_protected(message.from_user.id),
-    )
+    try:
+        sent = await send_movie_by_id(
+            message,
+            movie_id,
+            message.from_user.id,
+            extra_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎲 Yana random", callback_data="rand:again")]]
+            ),
+        )
+    except (TelegramBadRequest, TelegramForbiddenError, ValueError):
+        sent = False
+    if not sent:
+        await message.answer("Kino topilmadi.")
 
 
 @router.message(F.text.in_({BTN_TOP_VIEWED, "Top ko'rilganlar"}))
@@ -8130,7 +8502,7 @@ async def preview_content_from_callback(callback: CallbackQuery, state: FSMConte
 
     try:
         if content_type == "movie":
-            sent = await send_movie_preview_by_id(callback.message, content_ref, callback.from_user.id)
+            sent = await send_movie_by_id(callback.message, content_ref, callback.from_user.id)
             if not sent:
                 await callback.answer("Kino topilmadi", show_alert=True)
                 return
@@ -8581,7 +8953,7 @@ async def handle_code_request(message: Message, state: FSMContext) -> None:
         movie = db.get_movie(f"k{code}") or db.get_movie(f"K{code}")
     if movie:
         try:
-            sent = await send_movie_preview_by_id(message, str(movie["id"]), message.from_user.id)
+            sent = await send_movie_by_id(message, str(movie["id"]), message.from_user.id)
             if not sent:
                 db.log_request(message.from_user.id, code, "not_found")
                 await message.answer("❌ Kino topilmadi.")
